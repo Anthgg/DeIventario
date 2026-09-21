@@ -1,0 +1,86 @@
+# =============================================================================
+# INVENTARIO DEDALO - BACKEND (Python / FastAPI)
+# F000.1
+# =============================================================================
+
+# ------------------------- Entorno y secretos --------------------------------
+# NUNCA commitear archivos con credenciales reales.
+.env
+.env.*
+!.env.example
+
+# ------------------------------- Python --------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# --------------------------- Entornos virtuales ------------------------------
+.venv/
+venv/
+ENV/
+env/
+
+# ------------------------------- Testing -------------------------------------
+.pytest_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+htmlcov/
+
+# --------------------------- Linting / type-checking -------------------------
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.ruff_cache/
+.pytype/
+
+# ------------------------ Almacenamiento local -------------------------------
+# Se conservan las carpetas, no su contenido.
+storage/uploads/*
+storage/exports/*
+storage/evidence/*
+!storage/uploads/.gitkeep
+!storage/exports/.gitkeep
+!storage/evidence/.gitkeep
+
+# --------------------------------- Logs --------------------------------------
+logs/
+*.log
+
+# ------------------------------ IDE / SO -------------------------------------
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# ------------------- Runtime del agente (no es del proyecto) -----------------
+.openclaw/
+.openclaw-attachments/
+.agents/
+AGENTS.md
+SOUL.md
+IDENTITY.md
+USER.md
+TOOLS.md
+HEARTBEAT.md

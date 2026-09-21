@@ -1,0 +1,10 @@
+# Archivos binarios: sin normalizacion de finales de linea ni chequeos de diff
+*.pdf  binary
+*.xlsx binary
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.woff binary
+*.woff2 binary
