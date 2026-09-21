@@ -41,6 +41,11 @@ exclude = [".venv", "storage"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "C4", "SIM", "W"]
 
+[tool.ruff.lint.per-file-ignores]
+# Alembic genera DDL en lineas largas dentro de las migraciones.
+# Solo se excluye la longitud de linea; el resto de reglas si aplica.
+"migrations/versions/*.py" = ["E501"]
+
 [tool.mypy]
 python_version = "3.12"
 plugins = ["pydantic.mypy"]
