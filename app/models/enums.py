@@ -90,3 +90,21 @@ class ReconciliationStatus(enum.StrEnum):
     RECOUNT_REQUIRED = "RECOUNT_REQUIRED"
     UNDER_REVIEW = "UNDER_REVIEW"
     APPROVED = "APPROVED"
+
+
+class ImportBatchType(enum.StrEnum):
+    """Tipos de importacion soportados por el pipeline Odoo."""
+
+    CONTACTS = "CONTACTS"
+    PRODUCTS = "PRODUCTS"
+    MIXED_PRODUCT_EXPORT = "MIXED_PRODUCT_EXPORT"
+
+
+class ImportBatchStatus(enum.StrEnum):
+    """Estados de un lote de importacion."""
+
+    PENDING = "PENDING"
+    PROCESSING = "PROCESSING"
+    COMPLETED = "COMPLETED"
+    COMPLETED_WITH_WARNINGS = "COMPLETED_WITH_WARNINGS"
+    FAILED = "FAILED"

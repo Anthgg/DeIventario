@@ -15,6 +15,8 @@ EXPECTED_TABLES = frozenset(
     {
         "audit_events",
         "contacts",
+        "import_batches",
+        "import_errors",
         "inventory_assignments",
         "inventory_campaigns",
         "inventory_count_events",
@@ -30,12 +32,15 @@ EXPECTED_TABLES = frozenset(
         "product_supplier_refs",
         "products",
         "roles",
+        "stock_movements",
+        "stock_snapshots",
         "user_roles",
         "users",
     }
 )
 
 ENUM_COLUMNS: dict[str, tuple[str, ...]] = {
+    "import_batches": ("import_type", "status"),
     "inventory_assignments": ("status",),
     "inventory_campaigns": ("status",),
     "inventory_count_events": ("event_type", "source"),
@@ -71,11 +76,15 @@ NUMERIC_COLUMNS: dict[str, tuple[str, ...]] = {
     ),
     "inventory_unknown_codes": ("quantity",),
     "products": ("sale_price", "cost", "consignment_cost"),
+    "stock_movements": ("quantity",),
+    "stock_snapshots": ("quantity",),
 }
 
 JSONB_COLUMNS: dict[str, str] = {
     "audit_events": "metadata",
+    "import_batches": "metadata",
     "inventory_count_events": "metadata",
+    "stock_movements": "raw_data",
 }
 
 # (tabla, columna) que deben ser TIMESTAMPTZ

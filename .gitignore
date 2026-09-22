@@ -84,3 +84,7 @@ IDENTITY.md
 USER.md
 TOOLS.md
 HEARTBEAT.md
+
+# -------- Exports reales de Odoo (datos de negocio/PII: NO versionar) --------
+FASES/*.xlsx
+!FASES/Plantilla_Inventario_Dedalo.xlsx

@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.health import router as health_router
+from app.api.imports import router as imports_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 
@@ -37,6 +38,7 @@ def create_app() -> FastAPI:
         return {"name": "Inventario Dedalo API", "status": "running"}
 
     application.include_router(health_router, prefix=settings.API_PREFIX)
+    application.include_router(imports_router, prefix=settings.API_PREFIX)
     return application
 
 

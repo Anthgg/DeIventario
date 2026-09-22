@@ -44,6 +44,8 @@ EXPECTED_TABLES = (
     "alembic_version",
     "audit_events",
     "contacts",
+    "import_batches",
+    "import_errors",
     "inventory_assignments",
     "inventory_campaigns",
     "inventory_count_events",
@@ -59,11 +61,15 @@ EXPECTED_TABLES = (
     "product_supplier_refs",
     "products",
     "roles",
+    "stock_movements",
+    "stock_snapshots",
     "user_roles",
     "users",
 )
 
 EXPECTED_CHECK_CONSTRAINTS = (
+    "ck_import_batches_importbatchstatus",
+    "ck_import_batches_importbatchtype",
     "ck_inventory_assignments_assignmentstatus",
     "ck_inventory_campaigns_campaignstatus",
     "ck_inventory_count_events_counteventtype",

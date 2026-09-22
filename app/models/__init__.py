@@ -16,9 +16,17 @@ from app.models.enums import (
     CostSource,
     CountEventType,
     EventSource,
+    ImportBatchStatus,
+    ImportBatchType,
     ReconciliationStatus,
     SessionStatus,
     SessionType,
+)
+from app.models.importer import (
+    ImportBatch,
+    ImportErrorRecord,
+    StockMovement,
+    StockSnapshot,
 )
 from app.models.inventory import (
     InventoryAssignment,
@@ -42,6 +50,10 @@ __all__ = [
     "CostSource",
     "CountEventType",
     "EventSource",
+    "ImportBatch",
+    "ImportBatchStatus",
+    "ImportBatchType",
+    "ImportErrorRecord",
     "InventoryAssignment",
     "InventoryCampaign",
     "InventoryCountEvent",
@@ -60,6 +72,8 @@ __all__ = [
     "Role",
     "SessionStatus",
     "SessionType",
+    "StockMovement",
+    "StockSnapshot",
     "User",
     "UserRole",
 ]
