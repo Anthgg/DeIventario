@@ -21,6 +21,7 @@ from app.models.enums import (
     ReconciliationStatus,
     SessionStatus,
     SessionType,
+    StockScope,
 )
 from app.models.importer import (
     ImportBatch,
@@ -76,6 +77,7 @@ __all__ = [
     "SessionStatus",
     "SessionType",
     "StockMovement",
+    "StockScope",
     "StockSnapshot",
     "User",
     "UserRole",

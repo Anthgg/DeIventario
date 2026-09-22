@@ -1,0 +1,192 @@
+"""Helpers para los tests de inventario (F004)."""
+
+from __future__ import annotations
+
+import datetime as dt
+import decimal
+import uuid
+
+from fastapi.testclient import TestClient
+from sqlalchemy import delete, select
+
+from app.db.session import SessionLocal
+from app.main import app
+from app.models import (
+    AuditEvent,
+    ImportBatch,
+    InventoryAssignment,
+    InventoryCampaign,
+    InventorySnapshotItem,
+    Location,
+    Product,
+    StockSnapshot,
+    User,
+    UserRole,
+)
+from app.models.enums import ImportBatchStatus, ImportBatchType
+from app.services.auth import rbac_service
+from tests.auth_helpers import override_auth
+
+client = TestClient(app)
+
+PERMS_READ = {"inventory.read"}
+PERMS_CREATE = {"inventory.create"}
+PERMS_ASSIGN = {"inventory.assign"}
+PERMS_MONITOR = {"inventory.monitor"}
+PERMS_CLOSE = {"inventory.close"}
+PERMS_REOPEN = {"inventory.reopen"}
+PERMS_EXPECTED = {"inventory.expected.read"}
+
+
+def as_user(permissions: set[str], *, roles: tuple[str, ...] = ()) -> uuid.UUID:
+    """Crea un usuario real (para auditoria) y lo usa como identidad autenticada."""
+    user_id = create_test_user(roles=roles)
+    override_auth(permissions, user_id=user_id)
+    return user_id
+
+
+def _now() -> dt.datetime:
+    return dt.datetime.now(dt.UTC)
+
+
+def create_test_user(*, roles: tuple[str, ...] = (), active: bool = True) -> uuid.UUID:
+    with SessionLocal() as db:
+        user = User(
+            auth_user_id=uuid.uuid4(),
+            email=f"test-auth-{uuid.uuid4()}@example.invalid",
+            display_name="Usuario Test",
+            is_active=active,
+        )
+        db.add(user)
+        db.flush()
+        for role in roles:
+            rbac_service.assign_role(db, user.id, role)
+        db.commit()
+        return user.id
+
+
+def create_operator_user() -> uuid.UUID:
+    return create_test_user(roles=("OPERATOR",))
+
+
+def create_inactive_user() -> uuid.UUID:
+    return create_test_user(active=False)
+
+
+def create_test_location(*, name: str | None = None, code: str | None = None) -> uuid.UUID:
+    with SessionLocal() as db:
+        location = Location(
+            name=name or f"test-loc-{uuid.uuid4()}",
+            code=code,
+            active=True,
+        )
+        db.add(location)
+        db.commit()
+        return location.id
+
+
+def create_test_source_batch(
+    *,
+    quantities: tuple[tuple[str, str], ...] = (("P1", "5"), ("P2", "0"), ("P3", "3")),
+    with_location: bool = False,
+    import_type: ImportBatchType = ImportBatchType.PRODUCTS,
+    status: ImportBatchStatus = ImportBatchStatus.COMPLETED,
+    with_stock: bool = True,
+) -> uuid.UUID:
+    """Crea un lote de importacion de prueba con productos y stock_snapshots."""
+    location_id = create_test_location() if with_location else None
+    with SessionLocal() as db:
+        batch = ImportBatch(
+            import_type=import_type,
+            source_filename=f"test-batch-{uuid.uuid4()}.xlsx",
+            source_sha256=uuid.uuid4().hex + uuid.uuid4().hex,
+            status=status,
+            completed_at=_now(),
+        )
+        db.add(batch)
+        db.flush()
+        for reference, quantity in quantities:
+            product = Product(
+                internal_reference=f"TEST-{reference}-{uuid.uuid4().hex[:6]}",
+                name=f"Producto {reference}",
+                sale_price=decimal.Decimal("10.0000"),
+                cost=decimal.Decimal("2.0000"),
+                consignment_cost=decimal.Decimal("1.0000"),
+                currency="PEN",
+                active=True,
+            )
+            db.add(product)
+            db.flush()
+            if with_stock:
+                db.add(
+                    StockSnapshot(
+                        import_batch_id=batch.id,
+                        product_id=product.id,
+                        location_id=location_id,
+                        quantity=decimal.Decimal(quantity),
+                        source="TEST",
+                    )
+                )
+        db.commit()
+        return batch.id
+
+
+def cleanup_inventory_test_data() -> None:
+    """Elimina los datos creados por los tests (nombre/email con prefijo test-).
+
+    Orden seguro ante FKs RESTRICT: hijos antes que padres, y las asignaciones
+    se borran tanto por campana como por usuario de prueba.
+    """
+    with SessionLocal() as db:
+        campaign_ids = list(
+            db.execute(
+                select(InventoryCampaign.id).where(InventoryCampaign.name.like("test-%"))
+            ).scalars()
+        )
+        user_ids = list(
+            db.execute(select(User.id).where(User.email.like("test-auth-%"))).scalars()
+        )
+        batch_ids = list(
+            db.execute(
+                select(ImportBatch.id).where(ImportBatch.source_filename.like("test-%"))
+            ).scalars()
+        )
+        location_ids = list(
+            db.execute(select(Location.id).where(Location.name.like("test-%"))).scalars()
+        )
+
+        if campaign_ids:
+            db.execute(
+                delete(InventorySnapshotItem).where(
+                    InventorySnapshotItem.inventory_campaign_id.in_(campaign_ids)
+                )
+            )
+        # Asignaciones: por campana de prueba o por usuario de prueba.
+        if campaign_ids:
+            db.execute(
+                delete(InventoryAssignment).where(
+                    InventoryAssignment.inventory_campaign_id.in_(campaign_ids)
+                )
+            )
+        if user_ids:
+            db.execute(
+                delete(InventoryAssignment).where(InventoryAssignment.user_id.in_(user_ids))
+            )
+        if campaign_ids:
+            db.execute(delete(AuditEvent).where(AuditEvent.entity_id.in_(campaign_ids)))
+            db.execute(delete(InventoryCampaign).where(InventoryCampaign.id.in_(campaign_ids)))
+
+        if batch_ids:
+            db.execute(delete(StockSnapshot).where(StockSnapshot.import_batch_id.in_(batch_ids)))
+            db.execute(delete(ImportBatch).where(ImportBatch.id.in_(batch_ids)))
+        db.execute(delete(Product).where(Product.internal_reference.like("TEST-%")))
+
+        if location_ids:
+            db.execute(delete(AuditEvent).where(AuditEvent.entity_id.in_(location_ids)))
+            db.execute(delete(Location).where(Location.id.in_(location_ids)))
+
+        if user_ids:
+            db.execute(delete(UserRole).where(UserRole.user_id.in_(user_ids)))
+            db.execute(delete(AuditEvent).where(AuditEvent.entity_id.in_(user_ids)))
+            db.execute(delete(User).where(User.id.in_(user_ids)))
+        db.commit()

@@ -116,6 +116,10 @@ def cleanup_auth_test_data() -> None:
         )
         if not ids:
             return
+        # Las asignaciones de inventario referencian al usuario con RESTRICT.
+        from app.models import InventoryAssignment
+
+        db.execute(delete(InventoryAssignment).where(InventoryAssignment.user_id.in_(ids)))
         db.execute(delete(AuditEvent).where(AuditEvent.entity_id.in_(ids)))
         db.execute(delete(UserRole).where(UserRole.user_id.in_(ids)))
         db.execute(delete(User).where(User.id.in_(ids)))

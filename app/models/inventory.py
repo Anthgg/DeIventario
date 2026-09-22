@@ -28,6 +28,7 @@ from app.models.enums import (
     EventSource,
     SessionStatus,
     SessionType,
+    StockScope,
 )
 from app.models.location import Location
 from app.models.product import Product
@@ -66,6 +67,17 @@ class InventoryCampaign(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     reopen_reason: Mapped[str | None] = mapped_column(sa.Text)
 
+    # F004: fuente de expected stock y control de version.
+    source_import_batch_id: Mapped[uuid.UUID | None] = mapped_column(
+        sa.Uuid, sa.ForeignKey("import_batches.id", ondelete="RESTRICT")
+    )
+    source_stock_scope: Mapped[StockScope | None] = mapped_column(varchar_enum(StockScope))
+    snapshot_frozen_at: Mapped[dt.datetime | None] = mapped_column(sa.DateTime(timezone=True))
+    snapshot_sha256: Mapped[str | None] = mapped_column(sa.String(64))
+    version: Mapped[int] = mapped_column(
+        sa.Integer, nullable=False, default=1, server_default=sa.text("1")
+    )
+
     location: Mapped[Location | None] = relationship()
     snapshot_items: Mapped[list[InventorySnapshotItem]] = relationship(
         back_populates="campaign"
@@ -77,9 +89,20 @@ class InventoryAssignment(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
 
     Reasignar crea NUEVA asignacion (nunca se modifica/borra la anterior):
     por eso NO existe unique (campaign_id, user_id) — la historia se conserva.
+
+    Un indice unico parcial garantiza como maximo UNA asignacion ACTIVE por
+    campana, incluso con peticiones concurrentes.
     """
 
     __tablename__ = "inventory_assignments"
+    __table_args__ = (
+        sa.Index(
+            "uq_inventory_assignments_active_per_campaign",
+            "inventory_campaign_id",
+            unique=True,
+            postgresql_where=sa.text("status = 'ACTIVE' AND revoked_at IS NULL"),
+        ),
+    )
 
     inventory_campaign_id: Mapped[uuid.UUID] = mapped_column(
         sa.Uuid,

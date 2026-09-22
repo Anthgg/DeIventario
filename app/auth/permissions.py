@@ -22,6 +22,7 @@ INVENTORY_RECONCILE = "inventory.reconcile"
 INVENTORY_APPROVE = "inventory.approve"
 INVENTORY_CLOSE = "inventory.close"
 INVENTORY_REOPEN = "inventory.reopen"
+INVENTORY_EXPECTED_READ = "inventory.expected.read"
 
 DAMAGE_REPORT = "damage.report"
 DAMAGE_REVIEW = "damage.review"

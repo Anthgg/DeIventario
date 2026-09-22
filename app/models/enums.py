@@ -92,6 +92,13 @@ class ReconciliationStatus(enum.StrEnum):
     APPROVED = "APPROVED"
 
 
+class StockScope(enum.StrEnum):
+    """Alcance del stock de origen de una campana."""
+
+    AGGREGATE = "AGGREGATE"
+    LOCATION = "LOCATION"
+
+
 class ImportBatchType(enum.StrEnum):
     """Tipos de importacion soportados por el pipeline Odoo."""
 

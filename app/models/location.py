@@ -9,9 +9,21 @@ from app.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 
 
 class Location(UUIDPrimaryKeyMixin, TimestampMixin, Base):
-    """Ubicacion fisica de inventario (se cargaran en fases posteriores)."""
+    """Ubicacion fisica de inventario.
+
+    ``code`` es unico cuando no es NULL (indice unico parcial); el nombre NO se
+    asume unico.
+    """
 
     __tablename__ = "locations"
+    __table_args__ = (
+        sa.Index(
+            "uq_locations_code_not_null",
+            "code",
+            unique=True,
+            postgresql_where=sa.text("code IS NOT NULL"),
+        ),
+    )
 
     code: Mapped[str | None] = mapped_column(sa.String(50))
     name: Mapped[str] = mapped_column(sa.String(255), nullable=False)
