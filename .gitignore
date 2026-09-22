@@ -78,6 +78,8 @@ Thumbs.db
 .openclaw/
 .openclaw-attachments/
 .agents/
+.opencode/
+config/
 AGENTS.md
 SOUL.md
 IDENTITY.md
