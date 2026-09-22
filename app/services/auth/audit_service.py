@@ -1,0 +1,40 @@
+"""Registro de eventos de auditoria (sin secretos ni tokens)."""
+
+from __future__ import annotations
+
+import uuid
+
+from sqlalchemy.orm import Session
+
+from app.models import AuditEvent
+
+LOGIN_SUCCESS = "LOGIN_SUCCESS"
+LOGIN_FAILED = "LOGIN_FAILED"
+LOGOUT = "LOGOUT"
+USER_AUTO_PROVISIONED = "USER_AUTO_PROVISIONED"
+USER_ACTIVATED = "USER_ACTIVATED"
+USER_DEACTIVATED = "USER_DEACTIVATED"
+ROLE_ASSIGNED = "ROLE_ASSIGNED"
+ROLE_REVOKED = "ROLE_REVOKED"
+ADMIN_BOOTSTRAPPED = "ADMIN_BOOTSTRAPPED"
+
+
+def record(
+    db: Session,
+    *,
+    action: str,
+    actor_user_id: uuid.UUID | None = None,
+    entity_type: str,
+    entity_id: uuid.UUID | None = None,
+    metadata: dict[str, object] | None = None,
+) -> AuditEvent:
+    """Agrega un evento de auditoria a la sesion (commit lo hace el caller)."""
+    event = AuditEvent(
+        actor_user_id=actor_user_id,
+        action=action,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        metadata_=metadata,
+    )
+    db.add(event)
+    return event

@@ -1,16 +1,30 @@
-"""Pruebas de los endpoints de importacion (TestClient)."""
+"""Pruebas de los endpoints de importacion (TestClient).
+
+Los endpoints de imports requieren permisos desde F003: se inyecta una
+identidad autenticada con imports.read/preview/execute.
+"""
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
+from tests.auth_helpers import override_auth
 from tests.import_helpers import cleanup_test_data, make_xlsx
 from tests.test_importers import CONTACT_HEADERS
 
 client = TestClient(app)
 
 _XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+@pytest.fixture(autouse=True)
+def _authenticated() -> Iterator[None]:
+    override_auth({"imports.read", "imports.preview", "imports.execute"})
+    yield
 
 
 def _post(path: str, data: bytes, filename: str = "test.xlsx"):

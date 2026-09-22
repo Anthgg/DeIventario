@@ -37,6 +37,7 @@ from app.models.inventory import (
     InventorySnapshotItem,
 )
 from app.models.location import Location
+from app.models.permission import Permission, RolePermission
 from app.models.product import Product, ProductSupplierRef
 from app.models.reconciliation import InventoryReconciliation
 from app.models.role import Role, UserRole
@@ -66,10 +67,12 @@ __all__ = [
     "InventorySnapshotItem",
     "InventoryUnknownCode",
     "Location",
+    "Permission",
     "Product",
     "ProductSupplierRef",
     "ReconciliationStatus",
     "Role",
+    "RolePermission",
     "SessionStatus",
     "SessionType",
     "StockMovement",

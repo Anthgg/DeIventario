@@ -79,6 +79,12 @@ class Settings(BaseSettings):
     # -- SEGURIDAD (aplicacion) --
     SECRET_KEY: SecretStr = SecretStr("")
 
+    # -- AUTH / JWT --
+    SUPABASE_JWT_AUDIENCE: str = "authenticated"
+    SUPABASE_JWT_ISSUER: str = ""  # vacio = derivado de SUPABASE_URL
+    AUTH_JWKS_CACHE_SECONDS: int = 300
+    AUTH_HTTP_TIMEOUT_SECONDS: float = 10.0
+
     # -- CORS --
     FRONTEND_URL: str = "http://localhost:5173"
     CORS_ORIGINS: str = ""
@@ -121,6 +127,16 @@ class Settings(BaseSettings):
         if not origins and self.FRONTEND_URL:
             return [self.FRONTEND_URL]
         return origins
+
+    @property
+    def supabase_jwks_url(self) -> str:
+        """URL del JWKS derivada de SUPABASE_URL (nunca hardcodeada)."""
+        return f"{self.SUPABASE_URL.rstrip('/')}/auth/v1/.well-known/jwks.json"
+
+    @property
+    def supabase_jwt_issuer(self) -> str:
+        """Issuer esperado: configurado o derivado de SUPABASE_URL."""
+        return self.SUPABASE_JWT_ISSUER or f"{self.SUPABASE_URL.rstrip('/')}/auth/v1"
 
     @property
     def supabase_publishable_key(self) -> str:

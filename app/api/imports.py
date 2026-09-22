@@ -9,6 +9,8 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.auth.dependencies import CurrentUser, require_permission
+from app.auth.permissions import IMPORTS_EXECUTE, IMPORTS_PREVIEW, IMPORTS_READ
 from app.core.config import get_settings
 from app.db.session import get_db
 from app.importers.base import ImportError, ImportSummary, InvalidFileError
@@ -21,6 +23,9 @@ _orchestrator = ImportOrchestrator()
 
 Upload = Annotated[UploadFile, File()]
 Database = Annotated[Session, Depends(get_db)]
+RequireImportsPreview = Annotated[CurrentUser, Depends(require_permission(IMPORTS_PREVIEW))]
+RequireImportsExecute = Annotated[CurrentUser, Depends(require_permission(IMPORTS_EXECUTE))]
+RequireImportsRead = Annotated[CurrentUser, Depends(require_permission(IMPORTS_READ))]
 
 
 def _read_xlsx(file: UploadFile) -> bytes:
@@ -76,7 +81,7 @@ def _summary_payload(summary: ImportSummary) -> dict[str, object]:
 
 
 @router.post("/preview")
-def preview_import(file: Upload) -> dict[str, object]:
+def preview_import(file: Upload, current: RequireImportsPreview) -> dict[str, object]:
     """Analiza el archivo sin persistir nada."""
     data = _read_xlsx(file)
     try:
@@ -87,7 +92,11 @@ def preview_import(file: Upload) -> dict[str, object]:
 
 
 @router.post("")
-def commit_import(file: Upload, dry_run: Annotated[bool, Query()] = False) -> dict[str, object]:
+def commit_import(
+    file: Upload,
+    current: RequireImportsExecute,
+    dry_run: Annotated[bool, Query()] = False,
+) -> dict[str, object]:
     """Importa el archivo. Con ``dry_run=true`` no modifica datos de negocio."""
     data = _read_xlsx(file)
     try:
@@ -98,7 +107,7 @@ def commit_import(file: Upload, dry_run: Annotated[bool, Query()] = False) -> di
 
 
 @router.get("/{batch_id}")
-def get_batch(batch_id: uuid.UUID, db: Database) -> dict[str, object]:
+def get_batch(batch_id: uuid.UUID, current: RequireImportsRead, db: Database) -> dict[str, object]:
     batch = db.get(ImportBatch, batch_id)
     if batch is None:
         raise HTTPException(status_code=404, detail="Lote no encontrado.")
@@ -120,7 +129,9 @@ def get_batch(batch_id: uuid.UUID, db: Database) -> dict[str, object]:
 
 
 @router.get("/{batch_id}/errors")
-def get_batch_errors(batch_id: uuid.UUID, db: Database) -> list[dict[str, object]]:
+def get_batch_errors(
+    batch_id: uuid.UUID, current: RequireImportsRead, db: Database
+) -> list[dict[str, object]]:
     batch = db.get(ImportBatch, batch_id)
     if batch is None:
         raise HTTPException(status_code=404, detail="Lote no encontrado.")

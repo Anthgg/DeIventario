@@ -5,6 +5,8 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.admin import router as admin_router
+from app.api.auth import router as auth_router
 from app.api.health import router as health_router
 from app.api.imports import router as imports_router
 from app.core.config import get_settings
@@ -39,6 +41,8 @@ def create_app() -> FastAPI:
 
     application.include_router(health_router, prefix=settings.API_PREFIX)
     application.include_router(imports_router, prefix=settings.API_PREFIX)
+    application.include_router(auth_router, prefix=settings.API_PREFIX)
+    application.include_router(admin_router, prefix=settings.API_PREFIX)
     return application
 
 
