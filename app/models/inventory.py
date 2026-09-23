@@ -189,9 +189,7 @@ class InventoryCountSession(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     """Sesion de conteo/reconteo. Cada sesion es independiente e historica."""
 
     __tablename__ = "inventory_count_sessions"
-    __table_args__ = (
-        sa.UniqueConstraint("inventory_campaign_id", "session_number"),
-    )
+    __table_args__ = (sa.UniqueConstraint("inventory_campaign_id", "session_number"),)
 
     inventory_campaign_id: Mapped[uuid.UUID] = mapped_column(
         sa.Uuid,
@@ -212,6 +210,15 @@ class InventoryCountSession(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     submitted_at: Mapped[dt.datetime | None] = mapped_column(sa.DateTime(timezone=True))
     device_identifier: Mapped[str | None] = mapped_column(sa.String(255))
 
+    # F005: control de version y secuencia autoritativa de eventos.
+    version: Mapped[int] = mapped_column(
+        sa.Integer, nullable=False, default=1, server_default=sa.text("1")
+    )
+    last_sequence: Mapped[int] = mapped_column(
+        sa.BigInteger, nullable=False, default=0, server_default=sa.text("0")
+    )
+    last_activity_at: Mapped[dt.datetime | None] = mapped_column(sa.DateTime(timezone=True))
+
     events: Mapped[list[InventoryCountEvent]] = relationship(back_populates="session")
 
 
@@ -219,6 +226,27 @@ class InventoryCountEvent(UUIDPrimaryKeyMixin, Base):
     """LOG INMUTABLE de conteo. ``client_event_uuid`` garantiza idempotencia."""
 
     __tablename__ = "inventory_count_events"
+    __table_args__ = (
+        sa.Index(
+            "uq_inventory_count_events_session_sequence",
+            "session_id",
+            "server_sequence",
+            unique=True,
+            postgresql_where=sa.text("server_sequence IS NOT NULL"),
+        ),
+        sa.Index(
+            "ix_inventory_count_events_session_product_sequence",
+            "session_id",
+            "product_id",
+            "server_sequence",
+        ),
+        sa.Index(
+            "uq_inventory_count_events_reverses_event",
+            "reverses_event_id",
+            unique=True,
+            postgresql_where=sa.text("reverses_event_id IS NOT NULL"),
+        ),
+    )
 
     session_id: Mapped[uuid.UUID] = mapped_column(
         sa.Uuid,
@@ -246,6 +274,13 @@ class InventoryCountEvent(UUIDPrimaryKeyMixin, Base):
     received_at: Mapped[dt.datetime] = mapped_column(sa.DateTime(timezone=True), nullable=False)
     metadata_: Mapped[dict[str, object] | None] = mapped_column("metadata", postgresql.JSONB)
 
+    # F005: secuencia autoritativa y soporte de undo.
+    server_sequence: Mapped[int | None] = mapped_column(sa.BigInteger)
+    previous_quantity: Mapped[decimal.Decimal | None] = mapped_column(sa.Numeric(18, 4))
+    reverses_event_id: Mapped[uuid.UUID | None] = mapped_column(
+        sa.Uuid, sa.ForeignKey("inventory_count_events.id", ondelete="RESTRICT")
+    )
+
     session: Mapped[InventoryCountSession] = relationship(back_populates="events")
 
 
@@ -253,7 +288,19 @@ class InventoryCountTotal(UUIDPrimaryKeyMixin, Base):
     """Materializacion operativa del estado de conteo (sesion, producto)."""
 
     __tablename__ = "inventory_count_totals"
-    __table_args__ = (sa.UniqueConstraint("session_id", "product_id"),)
+    __table_args__ = (
+        sa.UniqueConstraint("session_id", "product_id"),
+        sa.CheckConstraint(
+            "quantity >= 0", name="ck_inventory_count_totals_quantity_non_negative"
+        ),
+        sa.CheckConstraint(
+            "damaged_quantity >= 0", name="ck_inventory_count_totals_damaged_non_negative"
+        ),
+        sa.CheckConstraint(
+            "damaged_quantity <= quantity",
+            name="ck_inventory_count_totals_damaged_le_quantity",
+        ),
+    )
 
     session_id: Mapped[uuid.UUID] = mapped_column(
         sa.Uuid,

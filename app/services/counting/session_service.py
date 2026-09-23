@@ -1,0 +1,365 @@
+"""Servicio de sesiones de conteo: arranque, consulta, finish-check y submit."""
+
+from __future__ import annotations
+
+import datetime as dt
+import decimal
+import uuid
+
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from app.models import (
+    InventoryAssignment,
+    InventoryCampaign,
+    InventoryCountSession,
+    InventoryCountTotal,
+    InventorySnapshotItem,
+    Product,
+    User,
+)
+from app.models.enums import AssignmentStatus, CampaignStatus, SessionStatus, SessionType
+from app.services.auth import audit_service
+from app.services.counting.errors import CountError
+from app.services.inventory import campaign_service
+
+
+def _now() -> dt.datetime:
+    return dt.datetime.now(dt.UTC)
+
+
+def lock_session(db: Session, session_id: uuid.UUID) -> InventoryCountSession:
+    session = db.execute(
+        select(InventoryCountSession)
+        .where(InventoryCountSession.id == session_id)
+        .with_for_update()
+    ).scalar_one_or_none()
+    if session is None:
+        raise CountError("Sesion de conteo no encontrada", 404)
+    return session
+
+
+def get_session(db: Session, session_id: uuid.UUID) -> InventoryCountSession:
+    session = db.get(InventoryCountSession, session_id)
+    if session is None:
+        raise CountError("Sesion de conteo no encontrada", 404)
+    return session
+
+
+def assert_campaign_active(db: Session, session: InventoryCountSession) -> InventoryCampaign:
+    campaign = db.get(InventoryCampaign, session.inventory_campaign_id)
+    if campaign is None:
+        raise CountError("Campana no encontrada", 404)
+    if campaign_service.expire_campaign_if_due(db, campaign):
+        db.commit()
+        raise CountError("La campana expiro", 409, "CAMPAIGN_EXPIRED")
+    if campaign.status is not CampaignStatus.IN_PROGRESS:
+        raise CountError("La campana no esta en curso", 409, "CAMPAIGN_NOT_ACTIVE")
+    if campaign.deadline_at is not None and campaign.deadline_at <= _now():
+        raise CountError("La campana expiro", 409, "CAMPAIGN_EXPIRED")
+    return campaign
+
+
+def start_session(
+    db: Session, *, campaign_id: uuid.UUID, actor_id: uuid.UUID
+) -> tuple[InventoryCountSession, bool]:
+    campaign = campaign_service.lock_campaign(db, campaign_id)
+    if campaign_service.expire_campaign_if_due(db, campaign):
+        db.commit()
+        raise CountError("La campana expiro", 409, "CAMPAIGN_EXPIRED")
+    if campaign.status is not CampaignStatus.IN_PROGRESS:
+        raise CountError("La campana no esta en curso", 409, "CAMPAIGN_NOT_ACTIVE")
+    if campaign.deadline_at is not None and campaign.deadline_at <= _now():
+        raise CountError("La campana expiro", 409, "CAMPAIGN_EXPIRED")
+
+    assignment = campaign_service.active_assignment(db, campaign_id)
+    if assignment is None:
+        raise CountError("La campana no tiene responsable activo", 409)
+    if assignment.user_id != actor_id:
+        raise CountError("No eres el responsable activo de esta campana", 403)
+
+    existing = db.execute(
+        select(InventoryCountSession)
+        .where(
+            InventoryCountSession.assignment_id == assignment.id,
+            InventoryCountSession.status.in_((SessionStatus.PENDING, SessionStatus.IN_PROGRESS)),
+        )
+        .limit(1)
+    ).scalar_one_or_none()
+    if existing is not None:
+        db.commit()
+        return existing, True
+
+    prior = db.execute(
+        select(func.count())
+        .select_from(InventoryAssignment)
+        .where(
+            InventoryAssignment.inventory_campaign_id == campaign_id,
+            InventoryAssignment.id != assignment.id,
+        )
+    ).scalar_one()
+    session_type = SessionType.REASSIGNMENT if prior > 0 else SessionType.INITIAL
+    max_number = db.execute(
+        select(func.coalesce(func.max(InventoryCountSession.session_number), 0)).where(
+            InventoryCountSession.inventory_campaign_id == campaign_id
+        )
+    ).scalar_one()
+    session = InventoryCountSession(
+        inventory_campaign_id=campaign_id,
+        assignment_id=assignment.id,
+        user_id=actor_id,
+        session_number=int(max_number) + 1,
+        session_type=session_type,
+        status=SessionStatus.IN_PROGRESS,
+        started_at=_now(),
+        version=1,
+        last_sequence=0,
+        last_activity_at=_now(),
+    )
+    db.add(session)
+    db.flush()
+    audit_service.record(
+        db,
+        action=audit_service.COUNT_SESSION_STARTED,
+        actor_user_id=actor_id,
+        entity_type="inventory_count_session",
+        entity_id=session.id,
+        metadata={
+            "campaign_id": str(campaign_id),
+            "assignment_id": str(assignment.id),
+            "session_number": session.session_number,
+            "session_type": session_type.value,
+        },
+    )
+    db.commit()
+    return session, False
+
+
+def cancel_sessions_for_assignment(db: Session, assignment_id: uuid.UUID) -> int:
+    """Cancela las sesiones IN_PROGRESS de una asignacion revocada (sin borrar historia)."""
+    sessions = list(
+        db.execute(
+            select(InventoryCountSession).where(
+                InventoryCountSession.assignment_id == assignment_id,
+                InventoryCountSession.status == SessionStatus.IN_PROGRESS,
+            )
+        ).scalars()
+    )
+    for session in sessions:
+        session.status = SessionStatus.CANCELLED
+        session.version += 1
+        audit_service.record(
+            db,
+            action=audit_service.COUNT_SESSION_CANCELLED_BY_REASSIGNMENT,
+            entity_type="inventory_count_session",
+            entity_id=session.id,
+            metadata={
+                "assignment_id": str(assignment_id),
+                "session_number": session.session_number,
+            },
+        )
+    if sessions:
+        db.flush()
+    return len(sessions)
+
+
+def _q(value: decimal.Decimal | int | None) -> str:
+    """Cantidades con escala fija de 4 decimales (formato estable para la PWA)."""
+    return f"{decimal.Decimal(value if value is not None else 0):.4f}"
+
+
+def session_actuals(db: Session, session_id: uuid.UUID) -> tuple[decimal.Decimal, int, int]:
+    units = db.execute(
+        select(func.coalesce(func.sum(InventoryCountTotal.quantity), 0)).where(
+            InventoryCountTotal.session_id == session_id
+        )
+    ).scalar_one()
+    distinct = db.execute(
+        select(func.count())
+        .select_from(InventoryCountTotal)
+        .where(InventoryCountTotal.session_id == session_id, InventoryCountTotal.quantity != 0)
+    ).scalar_one()
+    from app.models import InventoryCountEvent
+
+    events = db.execute(
+        select(func.count())
+        .select_from(InventoryCountEvent)
+        .where(InventoryCountEvent.session_id == session_id)
+    ).scalar_one()
+    return decimal.Decimal(units), int(distinct), int(events)
+
+
+def session_items(db: Session, session_id: uuid.UUID) -> list[dict[str, object]]:
+    rows = db.execute(
+        select(InventoryCountTotal, Product)
+        .join(Product, Product.id == InventoryCountTotal.product_id)
+        .where(
+            InventoryCountTotal.session_id == session_id,
+            InventoryCountTotal.quantity != 0,
+        )
+        .order_by(Product.internal_reference)
+    ).all()
+    return [
+        {
+            "product_id": str(product.id),
+            "internal_reference": product.internal_reference,
+            "name": product.name,
+            "quantity": _q(total.quantity),
+        }
+        for total, product in rows
+    ]
+
+
+def finish_check(db: Session, session: InventoryCountSession) -> dict[str, object]:
+    """Presencia/ausencia de productos del snapshot (sin cantidades esperadas)."""
+    snapshot_items = list(
+        db.execute(
+            select(InventorySnapshotItem).where(
+                InventorySnapshotItem.inventory_campaign_id == session.inventory_campaign_id
+            )
+        ).scalars()
+    )
+    totals = {
+        total.product_id: total.quantity
+        for total in db.execute(
+            select(InventoryCountTotal).where(InventoryCountTotal.session_id == session.id)
+        ).scalars()
+    }
+    missing = [
+        item
+        for item in snapshot_items
+        if totals.get(item.product_id, decimal.Decimal("0")) == 0
+    ]
+    return {
+        "has_missing": bool(missing),
+        "missing_products": [
+            {
+                "product_id": str(item.product_id),
+                "internal_reference": item.internal_reference_snapshot,
+                "name": item.description_snapshot,
+            }
+            for item in missing
+        ],
+    }
+
+
+def submit_session(
+    db: Session,
+    *,
+    session_id: uuid.UUID,
+    actor_id: uuid.UUID,
+    expected_version: int,
+    confirm_missing: bool,
+) -> tuple[InventoryCountSession, bool]:
+    session = lock_session(db, session_id)
+    if session.status is SessionStatus.SUBMITTED:
+        db.commit()
+        return session, True
+    if session.version != expected_version:
+        raise CountError("Conflicto de version", 409)
+    if session.status is not SessionStatus.IN_PROGRESS:
+        raise CountError("La sesion no esta en curso", 409, "SESSION_NOT_OPEN")
+    campaign = assert_campaign_active(db, session)
+    if session.user_id != actor_id:
+        raise CountError("No eres el dueno de esta sesion", 403)
+    assignment = campaign_service.active_assignment(db, session.inventory_campaign_id)
+    if assignment is None or assignment.user_id != actor_id:
+        raise CountError("La asignacion activa no te corresponde", 409)
+
+    check = finish_check(db, session)
+    if check["has_missing"] and not confirm_missing:
+        raise CountError(
+            "Existen productos sin registrar: confirme para enviar",
+            409,
+            "MISSING_PRODUCTS_CONFIRMATION_REQUIRED",
+            payload={"missing_products": check["missing_products"]},
+        )
+
+    session.status = SessionStatus.SUBMITTED
+    session.submitted_at = _now()
+    session.version += 1
+    assignment.status = AssignmentStatus.COMPLETED
+    campaign.status = CampaignStatus.SUBMITTED
+    campaign.submitted_at = _now()
+    campaign.version += 1
+    audit_service.record(
+        db,
+        action=audit_service.COUNT_SESSION_SUBMITTED,
+        actor_user_id=actor_id,
+        entity_type="inventory_count_session",
+        entity_id=session.id,
+        metadata={"campaign_id": str(campaign.id), "session_number": session.session_number},
+    )
+    audit_service.record(
+        db,
+        action=audit_service.CAMPAIGN_SUBMITTED,
+        actor_user_id=actor_id,
+        entity_type="inventory_campaign",
+        entity_id=campaign.id,
+        metadata={"code": campaign.code, "version": campaign.version},
+    )
+    db.commit()
+    return session, False
+
+
+def list_campaign_sessions(db: Session, campaign_id: uuid.UUID) -> list[dict[str, object]]:
+    sessions = list(
+        db.execute(
+            select(InventoryCountSession)
+            .where(InventoryCountSession.inventory_campaign_id == campaign_id)
+            .order_by(InventoryCountSession.session_number)
+        ).scalars()
+    )
+    user_ids = {session.user_id for session in sessions}
+    users: dict[uuid.UUID, User] = {}
+    if user_ids:
+        users = {
+            user.id: user
+            for user in db.execute(select(User).where(User.id.in_(user_ids))).scalars()
+        }
+    result: list[dict[str, object]] = []
+    for session in sessions:
+        units, distinct, events = session_actuals(db, session.id)
+        user = users.get(session.user_id)
+        result.append(
+            {
+                "id": str(session.id),
+                "session_number": session.session_number,
+                "session_type": session.session_type.value,
+                "status": session.status.value,
+                "user_id": str(session.user_id),
+                "user_display_name": user.display_name if user is not None else None,
+                "assignment_id": str(session.assignment_id) if session.assignment_id else None,
+                "started_at": session.started_at.isoformat() if session.started_at else None,
+                "submitted_at": session.submitted_at.isoformat() if session.submitted_at else None,
+                "last_activity_at": (
+                    session.last_activity_at.isoformat() if session.last_activity_at else None
+                ),
+                "actual_units_registered": _q(units),
+                "distinct_products_registered": distinct,
+                "event_count": events,
+            }
+        )
+    return result
+
+
+def session_payload(db: Session, session: InventoryCountSession) -> dict[str, object]:
+    units, distinct, events = session_actuals(db, session.id)
+    return {
+        "id": str(session.id),
+        "campaign_id": str(session.inventory_campaign_id),
+        "assignment_id": str(session.assignment_id) if session.assignment_id else None,
+        "user_id": str(session.user_id),
+        "session_number": session.session_number,
+        "session_type": session.session_type.value,
+        "status": session.status.value,
+        "started_at": session.started_at.isoformat() if session.started_at else None,
+        "submitted_at": session.submitted_at.isoformat() if session.submitted_at else None,
+        "last_activity_at": (
+            session.last_activity_at.isoformat() if session.last_activity_at else None
+        ),
+        "version": session.version,
+        "actual_units_registered": _q(units),
+        "distinct_products_registered": distinct,
+        "event_count": events,
+    }

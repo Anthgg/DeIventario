@@ -12,6 +12,7 @@ from app.auth.permissions import INVENTORY_COUNT
 from app.models import InventoryAssignment, User
 from app.models.enums import AssignmentStatus, CampaignStatus
 from app.services.auth import audit_service, rbac_service
+from app.services.counting import session_service as counting_sessions
 from app.services.inventory import campaign_service
 
 
@@ -59,6 +60,9 @@ def assign(
     reassigned = current is not None
     metadata: dict[str, object] = {"new_user_id": str(user_id)}
     if current is not None:
+        # F005: la sesion de conteo del responsable anterior se cancela
+        # (sin borrar eventos ni totales) en la misma transaccion.
+        counting_sessions.cancel_sessions_for_assignment(db, current.id)
         current.status = AssignmentStatus.REVOKED
         current.revoked_at = _now()
         db.flush()
@@ -106,6 +110,7 @@ def unassign(
         )
     current = campaign_service.active_assignment(db, campaign_id)
     if current is not None:
+        counting_sessions.cancel_sessions_for_assignment(db, current.id)
         current.status = AssignmentStatus.REVOKED
         current.revoked_at = _now()
         campaign.status = CampaignStatus.DRAFT

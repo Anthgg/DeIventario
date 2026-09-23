@@ -7,7 +7,8 @@ import decimal
 import uuid
 
 from fastapi.testclient import TestClient
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
+from sqlalchemy import false as sa_false
 
 from app.db.session import SessionLocal
 from app.main import app
@@ -16,6 +17,9 @@ from app.models import (
     ImportBatch,
     InventoryAssignment,
     InventoryCampaign,
+    InventoryCountEvent,
+    InventoryCountSession,
+    InventoryCountTotal,
     InventorySnapshotItem,
     Location,
     Product,
@@ -134,8 +138,8 @@ def create_test_source_batch(
 def cleanup_inventory_test_data() -> None:
     """Elimina los datos creados por los tests (nombre/email con prefijo test-).
 
-    Orden seguro ante FKs RESTRICT: hijos antes que padres, y las asignaciones
-    se borran tanto por campana como por usuario de prueba.
+    Orden seguro ante FKs RESTRICT: hijos antes que padres, undo antes que
+    eventos referenciados, y asignaciones por campana o por usuario de prueba.
     """
     with SessionLocal() as db:
         campaign_ids = list(
@@ -154,6 +158,45 @@ def cleanup_inventory_test_data() -> None:
         location_ids = list(
             db.execute(select(Location.id).where(Location.name.like("test-%"))).scalars()
         )
+        session_query = select(InventoryCountSession.id)
+        if campaign_ids and user_ids:
+            session_query = session_query.where(
+                or_(
+                    InventoryCountSession.inventory_campaign_id.in_(campaign_ids),
+                    InventoryCountSession.user_id.in_(user_ids),
+                )
+            )
+        elif campaign_ids:
+            session_query = session_query.where(
+                InventoryCountSession.inventory_campaign_id.in_(campaign_ids)
+            )
+        elif user_ids:
+            session_query = session_query.where(InventoryCountSession.user_id.in_(user_ids))
+        else:
+            session_query = session_query.where(sa_false())
+        session_ids = list(db.execute(session_query).scalars())
+
+        if session_ids:
+            # Primero los UNDO (FK autorreferencial RESTRICT), luego el resto.
+            db.execute(
+                delete(InventoryCountEvent).where(
+                    InventoryCountEvent.session_id.in_(session_ids),
+                    InventoryCountEvent.reverses_event_id.is_not(None),
+                )
+            )
+            db.execute(
+                delete(InventoryCountEvent).where(
+                    InventoryCountEvent.session_id.in_(session_ids)
+                )
+            )
+            db.execute(
+                delete(InventoryCountTotal).where(
+                    InventoryCountTotal.session_id.in_(session_ids)
+                )
+            )
+            db.execute(
+                delete(InventoryCountSession).where(InventoryCountSession.id.in_(session_ids))
+            )
 
         if campaign_ids:
             db.execute(
@@ -161,7 +204,6 @@ def cleanup_inventory_test_data() -> None:
                     InventorySnapshotItem.inventory_campaign_id.in_(campaign_ids)
                 )
             )
-        # Asignaciones: por campana de prueba o por usuario de prueba.
         if campaign_ids:
             db.execute(
                 delete(InventoryAssignment).where(
@@ -189,4 +231,29 @@ def cleanup_inventory_test_data() -> None:
             db.execute(delete(UserRole).where(UserRole.user_id.in_(user_ids)))
             db.execute(delete(AuditEvent).where(AuditEvent.entity_id.in_(user_ids)))
             db.execute(delete(User).where(User.id.in_(user_ids)))
+        if session_ids:
+            db.execute(delete(AuditEvent).where(AuditEvent.entity_id.in_(session_ids)))
         db.commit()
+
+
+def batch_products(batch_id: str) -> list[tuple[uuid.UUID, str]]:
+    """Devuelve [(product_id, internal_reference)] del lote de prueba."""
+    with SessionLocal() as db:
+        rows = db.execute(
+            select(Product.id, Product.internal_reference)
+            .join(StockSnapshot, StockSnapshot.product_id == Product.id)
+            .where(StockSnapshot.import_batch_id == uuid.UUID(batch_id))
+            .order_by(Product.internal_reference)
+        ).all()
+        return [(row[0], row[1]) for row in rows]
+
+
+def create_standalone_product(reference: str) -> uuid.UUID:
+    """Producto del maestro que NO pertenece a ningun snapshot (caso EXTRA)."""
+    with SessionLocal() as db:
+        product = Product(
+            internal_reference=reference, name=f"Extra {reference}", currency="PEN", active=True
+        )
+        db.add(product)
+        db.commit()
+        return product.id
