@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import decimal
 import uuid
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, or_, select
@@ -20,7 +22,10 @@ from app.models import (
     InventoryCountEvent,
     InventoryCountSession,
     InventoryCountTotal,
+    InventoryDamage,
+    InventoryExtraItem,
     InventorySnapshotItem,
+    InventoryUnknownCode,
     Location,
     Product,
     StockSnapshot,
@@ -40,6 +45,10 @@ PERMS_MONITOR = {"inventory.monitor"}
 PERMS_CLOSE = {"inventory.close"}
 PERMS_REOPEN = {"inventory.reopen"}
 PERMS_EXPECTED = {"inventory.expected.read"}
+PERMS_RECONCILE = {"inventory.reconcile"}
+PERMS_DAMAGE_REVIEW = {"damage.review"}
+PERMS_DAMAGE_REPORT = {"damage.report"}
+PERMS_COUNT = {"inventory.count"}
 
 
 def as_user(permissions: set[str], *, roles: tuple[str, ...] = ()) -> uuid.UUID:
@@ -177,6 +186,45 @@ def cleanup_inventory_test_data() -> None:
         session_ids = list(db.execute(session_query).scalars())
 
         if session_ids:
+            # Evidencia de dano de test: borrar el archivo antes que la fila.
+            from app.core.config import get_settings
+
+            evidence_dir = Path(get_settings().EVIDENCE_DIR)
+            damage_rows = list(
+                db.execute(
+                    select(InventoryDamage.id, InventoryDamage.evidence_path).where(
+                        InventoryDamage.session_id.in_(session_ids)
+                    )
+                ).all()
+            )
+            damage_ids = [row[0] for row in damage_rows]
+            damage_paths = [row[1] for row in damage_rows]
+            unknown_ids = list(
+                db.execute(
+                    select(InventoryUnknownCode.id).where(
+                        InventoryUnknownCode.session_id.in_(session_ids)
+                    )
+                ).scalars()
+            )
+            # Auditorias de resolucion/evidencia (entity_id = damage/unknown).
+            linked_ids = damage_ids + unknown_ids
+            if linked_ids:
+                db.execute(delete(AuditEvent).where(AuditEvent.entity_id.in_(linked_ids)))
+            # Primero dannos (FK event_id RESTRICT), luego extras/unknowns.
+            db.execute(
+                delete(InventoryDamage).where(InventoryDamage.session_id.in_(session_ids))
+            )
+            db.execute(
+                delete(InventoryExtraItem).where(InventoryExtraItem.session_id.in_(session_ids))
+            )
+            db.execute(
+                delete(InventoryUnknownCode).where(
+                    InventoryUnknownCode.session_id.in_(session_ids)
+                )
+            )
+            for relative in evidence_paths(evidence_dir, damage_paths):
+                with contextlib.suppress(OSError):
+                    relative.unlink()
             # Primero los UNDO (FK autorreferencial RESTRICT), luego el resto.
             db.execute(
                 delete(InventoryCountEvent).where(
@@ -257,3 +305,16 @@ def create_standalone_product(reference: str) -> uuid.UUID:
         db.add(product)
         db.commit()
         return product.id
+
+
+def evidence_paths(evidence_dir: Path, relatives: list[str | None]) -> list[Path]:
+    """Resuelve rutas relativas de evidencia sin salir del directorio."""
+    base = evidence_dir.resolve()
+    result: list[Path] = []
+    for relative in relatives:
+        if not relative:
+            continue
+        candidate = (base / relative).resolve()
+        if candidate.parent == base and candidate.is_file():
+            result.append(candidate)
+    return result

@@ -106,6 +106,10 @@ class Settings(BaseSettings):
         default=25,
         validation_alias=AliasChoices("MAX_UPLOAD_MB", "STORAGE_MAX_UPLOAD_MB"),
     )
+    MAX_EVIDENCE_MB: int = Field(
+        default=8,
+        validation_alias=AliasChoices("MAX_EVIDENCE_MB", "EVIDENCE_MAX_MB"),
+    )
 
     # -- LOCALIZACION --
     DEFAULT_CURRENCY: str = Field(

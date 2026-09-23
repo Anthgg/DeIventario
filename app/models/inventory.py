@@ -281,6 +281,11 @@ class InventoryCountEvent(UUIDPrimaryKeyMixin, Base):
         sa.Uuid, sa.ForeignKey("inventory_count_events.id", ondelete="RESTRICT")
     )
 
+    # F006: eventos de dano (NULL en eventos normales; delta fisico es 0 aqui).
+    damage_delta_quantity: Mapped[decimal.Decimal | None] = mapped_column(sa.Numeric(18, 4))
+    previous_damaged_quantity: Mapped[decimal.Decimal | None] = mapped_column(sa.Numeric(18, 4))
+    resulting_damaged_quantity: Mapped[decimal.Decimal | None] = mapped_column(sa.Numeric(18, 4))
+
     session: Mapped[InventoryCountSession] = relationship(back_populates="events")
 
 

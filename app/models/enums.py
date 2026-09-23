@@ -81,6 +81,13 @@ class EventSource(enum.StrEnum):
     SYSTEM = "SYSTEM"
 
 
+class DamageAction(enum.StrEnum):
+    """Accion sobre la cantidad danada (el signo vive en la accion, no en quantity)."""
+
+    ADD = "ADD"
+    SUBTRACT = "SUBTRACT"
+
+
 class ReconciliationStatus(enum.StrEnum):
     """Estados de la conciliacion por producto."""
 

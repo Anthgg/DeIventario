@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.admin import router as admin_router
 from app.api.auth import router as auth_router
 from app.api.counting import router as counting_router
+from app.api.exceptions import router as exceptions_router
 from app.api.health import router as health_router
 from app.api.imports import router as imports_router
 from app.api.inventory import router as inventory_router
@@ -47,6 +48,7 @@ def create_app() -> FastAPI:
     application.include_router(admin_router, prefix=settings.API_PREFIX)
     application.include_router(inventory_router, prefix=settings.API_PREFIX)
     application.include_router(counting_router, prefix=settings.API_PREFIX)
+    application.include_router(exceptions_router, prefix=settings.API_PREFIX)
     return application
 
 

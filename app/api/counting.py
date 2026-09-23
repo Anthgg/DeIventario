@@ -36,6 +36,8 @@ class EventRequest(BaseModel):
     quantity: decimal.Decimal | None = None
     occurred_at: dt.datetime | None = None
     source: EventSource | None = None
+    reason: str | None = None
+    observation: str | None = None
 
 
 class BatchRequest(BaseModel):
@@ -75,6 +77,8 @@ def _to_input(payload: EventRequest) -> event_service.EventInput:
         quantity=payload.quantity,
         occurred_at=occurred,
         source=payload.source,
+        reason=payload.reason,
+        observation=payload.observation,
     )
 
 

@@ -14,7 +14,10 @@ from app.models import (
     InventoryCampaign,
     InventoryCountSession,
     InventoryCountTotal,
+    InventoryDamage,
+    InventoryExtraItem,
     InventorySnapshotItem,
+    InventoryUnknownCode,
     Product,
     User,
 )
@@ -190,6 +193,12 @@ def session_actuals(db: Session, session_id: uuid.UUID) -> tuple[decimal.Decimal
 
 
 def session_items(db: Session, session_id: uuid.UUID) -> list[dict[str, object]]:
+    """Items operativos BLIND-SAFE: PRODUCT (incluye extras sin marcar) y UNKNOWN.
+
+    Nunca expone is_extra, expected, diferencia ni costos: la clasificacion es
+    administrativa. Un UNKNOWN se identifica solo por kind para que el frontend
+    sepa que no hay descripcion maestra (sin error ni bloqueo).
+    """
     rows = db.execute(
         select(InventoryCountTotal, Product)
         .join(Product, Product.id == InventoryCountTotal.product_id)
@@ -197,21 +206,46 @@ def session_items(db: Session, session_id: uuid.UUID) -> list[dict[str, object]]
             InventoryCountTotal.session_id == session_id,
             InventoryCountTotal.quantity != 0,
         )
-        .order_by(Product.internal_reference)
     ).all()
-    return [
+    items: list[dict[str, object]] = [
         {
+            "kind": "PRODUCT",
             "product_id": str(product.id),
             "internal_reference": product.internal_reference,
             "name": product.name,
             "quantity": _q(total.quantity),
+            "damaged_quantity": _q(total.damaged_quantity),
         }
         for total, product in rows
     ]
+    unknowns = db.execute(
+        select(InventoryUnknownCode)
+        .where(
+            InventoryUnknownCode.session_id == session_id,
+            InventoryUnknownCode.quantity != 0,
+        )
+    ).scalars()
+    items.extend(
+        {
+            "kind": "UNKNOWN",
+            "product_id": None,
+            "internal_reference": unknown.scanned_code,
+            "name": None,
+            "quantity": _q(unknown.quantity),
+            "damaged_quantity": _q(unknown.damaged_quantity),
+        }
+        for unknown in unknowns
+    )
+    items.sort(key=lambda item: str(item["internal_reference"]))
+    return items
 
 
 def finish_check(db: Session, session: InventoryCountSession) -> dict[str, object]:
-    """Presencia/ausencia de productos del snapshot (sin cantidades esperadas)."""
+    """Presencia/ausencia de productos del snapshot (sin cantidades esperadas).
+
+    Un UNKNOWN resuelto con quantity > 0 satisface la presencia de su
+    producto resuelto; un UNKNOWN sin resolver no satisface a ninguno.
+    """
     snapshot_items = list(
         db.execute(
             select(InventorySnapshotItem).where(
@@ -225,11 +259,16 @@ def finish_check(db: Session, session: InventoryCountSession) -> dict[str, objec
             select(InventoryCountTotal).where(InventoryCountTotal.session_id == session.id)
         ).scalars()
     }
-    missing = [
-        item
-        for item in snapshot_items
-        if totals.get(item.product_id, decimal.Decimal("0")) == 0
-    ]
+    present = {product_id for product_id, quantity in totals.items() if quantity != 0}
+    resolved = db.execute(
+        select(InventoryUnknownCode.resolved_product_id).where(
+            InventoryUnknownCode.session_id == session.id,
+            InventoryUnknownCode.quantity != 0,
+            InventoryUnknownCode.resolved_product_id.is_not(None),
+        )
+    ).scalars()
+    present.update(product_id for product_id in resolved if product_id is not None)
+    missing = [item for item in snapshot_items if item.product_id not in present]
     return {
         "has_missing": bool(missing),
         "missing_products": [
@@ -240,6 +279,30 @@ def finish_check(db: Session, session: InventoryCountSession) -> dict[str, objec
             }
             for item in missing
         ],
+    }
+
+
+def _has_exceptions(db: Session, session_id: uuid.UUID) -> dict[str, bool]:
+    """Presencia de excepciones para el audit de submit (sin cantidades)."""
+    damages = db.execute(
+        select(func.count())
+        .select_from(InventoryDamage)
+        .where(InventoryDamage.session_id == session_id)
+    ).scalar_one()
+    extras = db.execute(
+        select(func.count())
+        .select_from(InventoryExtraItem)
+        .where(InventoryExtraItem.session_id == session_id, InventoryExtraItem.quantity != 0)
+    ).scalar_one()
+    unknowns = db.execute(
+        select(func.count())
+        .select_from(InventoryUnknownCode)
+        .where(InventoryUnknownCode.session_id == session_id, InventoryUnknownCode.quantity != 0)
+    ).scalar_one()
+    return {
+        "has_damage": damages > 0,
+        "has_extras": extras > 0,
+        "has_unknowns": unknowns > 0,
     }
 
 
@@ -275,6 +338,10 @@ def submit_session(
             payload={"missing_products": check["missing_products"]},
         )
 
+    # F006: dano/extras/unknowns NUNCA bloquean el submit; quedan disponibles
+    # en los endpoints administrativos (auto-envio a revision sin email/push).
+    exceptions = _has_exceptions(db, session.id)
+
     session.status = SessionStatus.SUBMITTED
     session.submitted_at = _now()
     session.version += 1
@@ -298,6 +365,20 @@ def submit_session(
         entity_id=campaign.id,
         metadata={"code": campaign.code, "version": campaign.version},
     )
+    if any(exceptions.values()):
+        audit_service.record(
+            db,
+            action=audit_service.COUNT_EXCEPTIONS_READY,
+            actor_user_id=actor_id,
+            entity_type="inventory_count_session",
+            entity_id=session.id,
+            metadata={
+                "session_id": str(session.id),
+                "has_damage": exceptions["has_damage"],
+                "has_extras": exceptions["has_extras"],
+                "has_unknowns": exceptions["has_unknowns"],
+            },
+        )
     db.commit()
     return session, False
 

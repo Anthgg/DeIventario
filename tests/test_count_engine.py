@@ -10,7 +10,7 @@ from typing import Any
 from sqlalchemy import func, select
 
 from app.db.session import SessionLocal
-from app.models import InventoryCountEvent, InventoryCountTotal, Product
+from app.models import InventoryCountEvent, InventoryCountTotal, InventoryUnknownCode, Product
 from app.models.enums import CountEventType, EventSource
 from app.services.counting import event_service
 from tests.auth_helpers import override_auth
@@ -467,16 +467,31 @@ def test_extra_product_is_accepted() -> None:
     cleanup_inventory_test_data()
 
 
-def test_unknown_code_is_controlled_error() -> None:
+def test_unknown_code_is_accepted_without_fictitious_product() -> None:
     campaign_id, _batch, operator_id = _ready_to_count()
     _as_operator(operator_id)
     sid = str(_start_session(campaign_id)["id"])
     code, body = _event(sid, "QR_SCAN", code="ZZZ99999")
-    assert code == 409
-    assert body["detail"]["error"] == "UNKNOWN_CODE_NOT_YET_SUPPORTED"
+    assert code == 200
+    assert body["resulting_quantity"] == "1.0000"
+    assert body["product_id"] is None
+    assert body["scanned_code"] == "ZZZ99999"
     with SessionLocal() as db:
-        products = db.execute(select(func.count()).select_from(Product)).scalar_one()
-    assert products > 0  # no se creo ningun producto ficticio
+        fake = db.execute(
+            select(func.count())
+            .select_from(Product)
+            .where(Product.internal_reference == "ZZZ99999")
+        ).scalar_one()
+        unknown = db.execute(
+            select(func.count())
+            .select_from(InventoryUnknownCode)
+            .where(
+                InventoryUnknownCode.session_id == uuid.UUID(sid),
+                InventoryUnknownCode.scanned_code == "ZZZ99999",
+            )
+        ).scalar_one()
+    assert fake == 0  # no se creo ningun producto ficticio
+    assert unknown == 1
     cleanup_inventory_test_data()
 
 
