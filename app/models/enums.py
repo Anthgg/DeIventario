@@ -109,6 +109,13 @@ class ReconciliationStatus(enum.StrEnum):
     APPROVED = "APPROVED"
 
 
+class SelectionMode(enum.StrEnum):
+    """Como se elegio el conteo oficial de un producto (F008)."""
+
+    DEFAULT_SESSION = "DEFAULT_SESSION"
+    PRODUCT_OVERRIDE = "PRODUCT_OVERRIDE"
+
+
 class StockScope(enum.StrEnum):
     """Alcance del stock de origen de una campana."""
 

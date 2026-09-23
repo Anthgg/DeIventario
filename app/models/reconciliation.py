@@ -1,7 +1,8 @@
-"""Conciliacion por producto al cerrar una campana.
+"""Conciliacion por producto al cerrar una campana (F008).
 
-Sin formulas todavia: F001 solo define persistencia. Los campos de valores
-(missing_cost_value, damage_cost_value, etc.) quedan preparados para F002+.
+Comparacion Odoo (snapshot congelado) vs conteos oficiales. Los campos de
+valores (missing_cost_value, damage_cost_value, etc.) existen pero F008 NO
+los calcula: quedan NULL (valuacion es F009).
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ import sqlalchemy as sa
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin, varchar_enum
-from app.models.enums import ReconciliationStatus
+from app.models.enums import ReconciliationStatus, SelectionMode
 
 
 class InventoryReconciliation(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -66,3 +67,16 @@ class InventoryReconciliation(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         sa.Uuid, sa.ForeignKey("users.id", ondelete="SET NULL")
     )
     approved_at: Mapped[dt.datetime | None] = mapped_column(sa.DateTime(timezone=True))
+
+    selected_session_id: Mapped[uuid.UUID | None] = mapped_column(
+        sa.Uuid,
+        sa.ForeignKey("inventory_count_sessions.id", ondelete="RESTRICT"),
+    )
+    selection_mode: Mapped[SelectionMode | None] = mapped_column(varchar_enum(SelectionMode))
+    selected_by: Mapped[uuid.UUID | None] = mapped_column(
+        sa.Uuid, sa.ForeignKey("users.id", ondelete="SET NULL")
+    )
+    selected_at: Mapped[dt.datetime | None] = mapped_column(sa.DateTime(timezone=True))
+    version: Mapped[int] = mapped_column(
+        sa.Integer, nullable=False, default=1, server_default=sa.text("1")
+    )

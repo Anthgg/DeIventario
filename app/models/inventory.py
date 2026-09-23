@@ -78,6 +78,12 @@ class InventoryCampaign(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         sa.Integer, nullable=False, default=1, server_default=sa.text("1")
     )
 
+    # F008: huella de la fuente de conciliacion (sesiones SUBMITTED oficiales).
+    reconciliation_prepared_at: Mapped[dt.datetime | None] = mapped_column(
+        sa.DateTime(timezone=True)
+    )
+    reconciliation_source_sha256: Mapped[str | None] = mapped_column(sa.String(64))
+
     location: Mapped[Location | None] = relationship()
     snapshot_items: Mapped[list[InventorySnapshotItem]] = relationship(
         back_populates="campaign"

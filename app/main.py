@@ -12,6 +12,7 @@ from app.api.exceptions import router as exceptions_router
 from app.api.health import router as health_router
 from app.api.imports import router as imports_router
 from app.api.inventory import router as inventory_router
+from app.api.reconciliation import router as reconciliation_router
 from app.api.recounts import router as recounts_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging
@@ -51,6 +52,7 @@ def create_app() -> FastAPI:
     application.include_router(counting_router, prefix=settings.API_PREFIX)
     application.include_router(exceptions_router, prefix=settings.API_PREFIX)
     application.include_router(recounts_router, prefix=settings.API_PREFIX)
+    application.include_router(reconciliation_router, prefix=settings.API_PREFIX)
     return application
 
 

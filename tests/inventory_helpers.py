@@ -24,6 +24,7 @@ from app.models import (
     InventoryCountTotal,
     InventoryDamage,
     InventoryExtraItem,
+    InventoryReconciliation,
     InventoryRecount,
     InventorySnapshotItem,
     InventoryUnknownCode,
@@ -214,6 +215,23 @@ def cleanup_inventory_test_data() -> None:
                 db.execute(delete(AuditEvent).where(AuditEvent.entity_id.in_(recount_ids)))
                 db.execute(
                     delete(InventoryRecount).where(InventoryRecount.id.in_(recount_ids))
+                )
+
+        # F008: las conciliaciones referencian campanas y sesiones (RESTRICT);
+        # deben eliminarse ANTES que las sesiones.
+        if campaign_ids:
+            reconciliation_ids = list(
+                db.execute(
+                    select(InventoryReconciliation.id).where(
+                        InventoryReconciliation.inventory_campaign_id.in_(campaign_ids)
+                    )
+                ).scalars()
+            )
+            if reconciliation_ids:
+                db.execute(
+                    delete(InventoryReconciliation).where(
+                        InventoryReconciliation.id.in_(reconciliation_ids)
+                    )
                 )
 
         if session_ids:
