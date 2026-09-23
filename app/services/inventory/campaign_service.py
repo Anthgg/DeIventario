@@ -9,8 +9,20 @@ import uuid
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import InventoryAssignment, InventoryCampaign, Location
-from app.models.enums import AssignmentStatus, CampaignStatus, StockScope
+from app.models import (
+    InventoryAssignment,
+    InventoryCampaign,
+    InventoryCountSession,
+    InventoryRecount,
+    Location,
+)
+from app.models.enums import (
+    AssignmentStatus,
+    CampaignStatus,
+    RecountStatus,
+    SessionStatus,
+    StockScope,
+)
 from app.services.auth import audit_service
 from app.services.inventory import snapshot_service
 
@@ -77,7 +89,8 @@ def active_assignment(db: Session, campaign_id: uuid.UUID) -> InventoryAssignmen
 def expire_campaign_if_due(db: Session, campaign: InventoryCampaign) -> bool:
     """Marca EXPIRED si la campana vigente ya supero su deadline (no hace commit)."""
     if (
-        campaign.status in (CampaignStatus.ASSIGNED, CampaignStatus.IN_PROGRESS)
+        campaign.status
+        in (CampaignStatus.ASSIGNED, CampaignStatus.IN_PROGRESS, CampaignStatus.RECOUNT)
         and campaign.deadline_at is not None
         and _now() >= campaign.deadline_at
     ):
@@ -326,7 +339,46 @@ def reopen_campaign(
         raise CampaignError("new_deadline_at debe ser futuro", 422)
     if campaign.status not in (CampaignStatus.EXPIRED, CampaignStatus.CLOSED):
         raise CampaignError("La campana no puede reabrirse en su estado actual", 409)
-    campaign.status = CampaignStatus.IN_PROGRESS
+    # F007: una sesion de reconteo caducada NO revive con el reopen. Se
+    # cancela (sin borrar historia) y el reconteo vuelve a ASSIGNED para que
+    # un administrador reasigne o reinicie de forma explicita.
+    stale_recounts = list(
+        db.execute(
+            select(InventoryRecount)
+            .where(
+                InventoryRecount.inventory_campaign_id == campaign_id,
+                InventoryRecount.status == RecountStatus.IN_PROGRESS,
+            )
+            .with_for_update()
+        ).scalars()
+    )
+    for recount in stale_recounts:
+        if recount.resulting_session_id is not None:
+            stale_session = db.get(InventoryCountSession, recount.resulting_session_id)
+            if (
+                stale_session is not None
+                and stale_session.status is SessionStatus.IN_PROGRESS
+            ):
+                stale_session.status = SessionStatus.CANCELLED
+                stale_session.version += 1
+        recount.resulting_session_id = None
+        recount.status = RecountStatus.ASSIGNED
+        recount.expected_version += 1
+    if stale_recounts:
+        db.flush()
+    open_recount = db.execute(
+        select(InventoryRecount.id)
+        .where(
+            InventoryRecount.inventory_campaign_id == campaign_id,
+            InventoryRecount.status.in_(
+                (RecountStatus.REQUESTED, RecountStatus.ASSIGNED, RecountStatus.IN_PROGRESS)
+            ),
+        )
+        .limit(1)
+    ).scalar_one_or_none()
+    campaign.status = (
+        CampaignStatus.RECOUNT if open_recount is not None else CampaignStatus.IN_PROGRESS
+    )
     campaign.deadline_at = new_deadline_at
     campaign.reopened_at = _now()
     campaign.reopened_by = actor_id

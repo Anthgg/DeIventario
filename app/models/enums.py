@@ -33,6 +33,16 @@ class AssignmentStatus(enum.StrEnum):
     COMPLETED = "COMPLETED"
 
 
+class RecountStatus(enum.StrEnum):
+    """Estados de un reconteo ciego (F007)."""
+
+    REQUESTED = "REQUESTED"
+    ASSIGNED = "ASSIGNED"
+    IN_PROGRESS = "IN_PROGRESS"
+    COMPLETED = "COMPLETED"
+    CANCELLED = "CANCELLED"
+
+
 class CostSource(enum.StrEnum):
     """Origen del costo efectivo congelado en el snapshot."""
 

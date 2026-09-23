@@ -16,12 +16,19 @@ from app.models import (
     InventoryCountTotal,
     InventoryDamage,
     InventoryExtraItem,
+    InventoryRecount,
     InventorySnapshotItem,
     InventoryUnknownCode,
     Product,
     User,
 )
-from app.models.enums import AssignmentStatus, CampaignStatus, SessionStatus, SessionType
+from app.models.enums import (
+    AssignmentStatus,
+    CampaignStatus,
+    RecountStatus,
+    SessionStatus,
+    SessionType,
+)
 from app.services.auth import audit_service
 from app.services.counting.errors import CountError
 from app.services.inventory import campaign_service
@@ -29,6 +36,13 @@ from app.services.inventory import campaign_service
 
 def _now() -> dt.datetime:
     return dt.datetime.now(dt.UTC)
+
+
+OPEN_RECOUNT_STATUSES = (
+    RecountStatus.REQUESTED,
+    RecountStatus.ASSIGNED,
+    RecountStatus.IN_PROGRESS,
+)
 
 
 def lock_session(db: Session, session_id: uuid.UUID) -> InventoryCountSession:
@@ -56,7 +70,8 @@ def assert_campaign_active(db: Session, session: InventoryCountSession) -> Inven
     if campaign_service.expire_campaign_if_due(db, campaign):
         db.commit()
         raise CountError("La campana expiro", 409, "CAMPAIGN_EXPIRED")
-    if campaign.status is not CampaignStatus.IN_PROGRESS:
+    # F007: RECOUNT es un estado operativo (la campana esta en reconteo).
+    if campaign.status not in (CampaignStatus.IN_PROGRESS, CampaignStatus.RECOUNT):
         raise CountError("La campana no esta en curso", 409, "CAMPAIGN_NOT_ACTIVE")
     if campaign.deadline_at is not None and campaign.deadline_at <= _now():
         raise CountError("La campana expiro", 409, "CAMPAIGN_EXPIRED")
@@ -70,7 +85,7 @@ def start_session(
     if campaign_service.expire_campaign_if_due(db, campaign):
         db.commit()
         raise CountError("La campana expiro", 409, "CAMPAIGN_EXPIRED")
-    if campaign.status is not CampaignStatus.IN_PROGRESS:
+    if campaign.status not in (CampaignStatus.IN_PROGRESS, CampaignStatus.RECOUNT):
         raise CountError("La campana no esta en curso", 409, "CAMPAIGN_NOT_ACTIVE")
     if campaign.deadline_at is not None and campaign.deadline_at <= _now():
         raise CountError("La campana expiro", 409, "CAMPAIGN_EXPIRED")
@@ -102,6 +117,20 @@ def start_session(
         )
     ).scalar_one()
     session_type = SessionType.REASSIGNMENT if prior > 0 else SessionType.INITIAL
+    # F007: si el responsable activo tiene un reconteo abierto, la sesion que
+    # arranca es SIEMPRE la de reconteo (lo decide el servidor, no el cliente).
+    open_recount = db.execute(
+        select(InventoryRecount)
+        .where(
+            InventoryRecount.inventory_campaign_id == campaign_id,
+            InventoryRecount.assigned_user_id == actor_id,
+            InventoryRecount.status.in_((RecountStatus.REQUESTED, RecountStatus.ASSIGNED)),
+        )
+        .with_for_update()
+        .limit(1)
+    ).scalar_one_or_none()
+    if open_recount is not None:
+        session_type = SessionType.RECOUNT
     max_number = db.execute(
         select(func.coalesce(func.max(InventoryCountSession.session_number), 0)).where(
             InventoryCountSession.inventory_campaign_id == campaign_id
@@ -134,6 +163,24 @@ def start_session(
             "session_type": session_type.value,
         },
     )
+    if open_recount is not None:
+        open_recount.status = RecountStatus.IN_PROGRESS
+        open_recount.resulting_session_id = session.id
+        open_recount.started_at = _now()
+        open_recount.expected_version += 1
+        audit_service.record(
+            db,
+            action=audit_service.RECOUNT_STARTED,
+            actor_user_id=actor_id,
+            entity_type="inventory_recount",
+            entity_id=open_recount.id,
+            metadata={
+                "campaign_id": str(campaign_id),
+                "session_id": str(session.id),
+                "assigned_user_id": str(open_recount.assigned_user_id),
+                "expected_version": open_recount.expected_version,
+            },
+        )
     db.commit()
     return session, False
 
@@ -379,6 +426,35 @@ def submit_session(
                 "has_unknowns": exceptions["has_unknowns"],
             },
         )
+    # F007: al enviar la sesion de reconteo, el reconteo queda COMPLETED.
+    # La sesion SUBMITTED previa y el estado de campana ya fueron registrados
+    # arriba (sin eventos duplicados).
+    if session.session_type is SessionType.RECOUNT:
+        recount = db.execute(
+            select(InventoryRecount)
+            .where(
+                InventoryRecount.resulting_session_id == session.id,
+                InventoryRecount.status.in_(OPEN_RECOUNT_STATUSES),
+            )
+            .with_for_update()
+        ).scalar_one_or_none()
+        if recount is not None:
+            recount.status = RecountStatus.COMPLETED
+            recount.completed_at = _now()
+            recount.expected_version += 1
+            audit_service.record(
+                db,
+                action=audit_service.RECOUNT_COMPLETED,
+                actor_user_id=actor_id,
+                entity_type="inventory_recount",
+                entity_id=recount.id,
+                metadata={
+                    "campaign_id": str(campaign.id),
+                    "session_id": str(session.id),
+                    "assigned_user_id": str(recount.assigned_user_id),
+                    "expected_version": recount.expected_version,
+                },
+            )
     db.commit()
     return session, False
 

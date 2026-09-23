@@ -16,7 +16,7 @@ import sqlalchemy as sa
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, CreatedAtMixin, TimestampMixin, UUIDPrimaryKeyMixin, varchar_enum
-from app.models.enums import DamageAction
+from app.models.enums import DamageAction, RecountStatus
 from app.models.inventory import InventoryCountSession
 
 
@@ -131,9 +131,23 @@ class InventoryUnknownCode(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
 
 class InventoryRecount(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
-    """Reconteo ciego: nunca almacenar aqui resultados visibles al operario."""
+    """Reconteo ciego: nunca almacenar aqui resultados visibles al operario.
+
+    Maximo UN reconteo abierto (REQUESTED/ASSIGNED/IN_PROGRESS) por campana:
+    lo garantiza un indice unico parcial a nivel de base de datos.
+    """
 
     __tablename__ = "inventory_recounts"
+    __table_args__ = (
+        sa.Index(
+            "uq_inventory_recounts_open_per_campaign",
+            "inventory_campaign_id",
+            unique=True,
+            postgresql_where=sa.text(
+                "status IN ('REQUESTED', 'ASSIGNED', 'IN_PROGRESS')"
+            ),
+        ),
+    )
 
     inventory_campaign_id: Mapped[uuid.UUID] = mapped_column(
         sa.Uuid,
@@ -162,6 +176,20 @@ class InventoryRecount(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     resulting_session: Mapped[InventoryCountSession | None] = relationship(
         foreign_keys="InventoryRecount.resulting_session_id"
     )
+
+    status: Mapped[RecountStatus] = mapped_column(
+        varchar_enum(RecountStatus), nullable=False, server_default="ASSIGNED"
+    )
+    # Optimistic locking (F007): el cliente envia expected_version.
+    expected_version: Mapped[int] = mapped_column(
+        sa.Integer, nullable=False, default=1, server_default=sa.text("1")
+    )
+    started_at: Mapped[dt.datetime | None] = mapped_column(sa.DateTime(timezone=True))
+    cancelled_at: Mapped[dt.datetime | None] = mapped_column(sa.DateTime(timezone=True))
+    cancelled_by: Mapped[uuid.UUID | None] = mapped_column(
+        sa.Uuid, sa.ForeignKey("users.id", ondelete="SET NULL")
+    )
+    cancel_reason: Mapped[str | None] = mapped_column(sa.Text)
 
     reason: Mapped[str | None] = mapped_column(sa.Text)
     completed_at: Mapped[dt.datetime | None] = mapped_column(sa.DateTime(timezone=True))

@@ -24,6 +24,7 @@ from app.models import (
     InventoryCountTotal,
     InventoryDamage,
     InventoryExtraItem,
+    InventoryRecount,
     InventorySnapshotItem,
     InventoryUnknownCode,
     Location,
@@ -49,6 +50,8 @@ PERMS_RECONCILE = {"inventory.reconcile"}
 PERMS_DAMAGE_REVIEW = {"damage.review"}
 PERMS_DAMAGE_REPORT = {"damage.report"}
 PERMS_COUNT = {"inventory.count"}
+PERMS_RECOUNT = {"inventory.recount"}
+PERMS_READ_RECOUNT = {"inventory.read", "inventory.recount"}
 
 
 def as_user(permissions: set[str], *, roles: tuple[str, ...] = ()) -> uuid.UUID:
@@ -184,6 +187,34 @@ def cleanup_inventory_test_data() -> None:
         else:
             session_query = session_query.where(sa_false())
         session_ids = list(db.execute(session_query).scalars())
+
+        # F007: los reconteos referencian campanas, usuarios y sesiones (RESTRICT).
+        if campaign_ids:
+            recount_ids = list(
+                db.execute(
+                    select(InventoryRecount.id).where(
+                        InventoryRecount.inventory_campaign_id.in_(campaign_ids)
+                    )
+                ).scalars()
+            )
+            if recount_ids:
+                db.execute(delete(AuditEvent).where(AuditEvent.entity_id.in_(recount_ids)))
+                db.execute(
+                    delete(InventoryRecount).where(InventoryRecount.id.in_(recount_ids))
+                )
+        if user_ids:
+            recount_ids = list(
+                db.execute(
+                    select(InventoryRecount.id).where(
+                        InventoryRecount.assigned_user_id.in_(user_ids)
+                    )
+                ).scalars()
+            )
+            if recount_ids:
+                db.execute(delete(AuditEvent).where(AuditEvent.entity_id.in_(recount_ids)))
+                db.execute(
+                    delete(InventoryRecount).where(InventoryRecount.id.in_(recount_ids))
+                )
 
         if session_ids:
             # Evidencia de dano de test: borrar el archivo antes que la fila.
