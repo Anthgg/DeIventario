@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from app.auth.dependencies import (
     CurrentUser,
     Database,
+    get_current_user,
     require_any_permission,
     require_permission,
 )
@@ -43,6 +44,8 @@ RequireDamageReview = Annotated[CurrentUser, Depends(require_permission(DAMAGE_R
 RequireDamageEvidence = Annotated[
     CurrentUser, Depends(require_any_permission(DAMAGE_REPORT, DAMAGE_REVIEW))
 ]
+# Lectura: dueno de la sesion o damage.review (sin exigir damage.report).
+RequireEvidenceReader = Annotated[CurrentUser, Depends(get_current_user)]
 
 _MAX_READ = 500
 
@@ -153,7 +156,7 @@ async def upload_damage_evidence(
 
 @router.get("/damages/{damage_id}/evidence")
 def download_damage_evidence(
-    damage_id: uuid.UUID, current: RequireDamageEvidence, db: Database
+    damage_id: uuid.UUID, current: RequireEvidenceReader, db: Database
 ) -> FileResponse:
     damage = _damage_or_404(db, damage_id)
     session = _session_of(db, damage)

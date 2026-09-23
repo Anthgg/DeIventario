@@ -19,10 +19,11 @@ from app.models import (
     InventoryCountSession,
     InventoryCountTotal,
     InventoryDamage,
+    InventoryExtraItem,
     InventoryUnknownCode,
     Product,
 )
-from app.models.enums import CountEventType
+from app.models.enums import CountEventType, EventSource
 from app.services.auth import audit_service
 from app.services.counting import event_service
 from tests.auth_helpers import override_auth
@@ -96,6 +97,32 @@ def _damaged(session_id: str, product_id: uuid.UUID) -> str:
             )
         ).scalar_one_or_none()
         return str(total.damaged_quantity) if total is not None else "0"
+
+
+def _unknown_row(session_id: str, code: str) -> InventoryUnknownCode:
+    with SessionLocal() as db:
+        unknown = db.execute(
+            select(InventoryUnknownCode).where(
+                InventoryUnknownCode.session_id == uuid.UUID(session_id),
+                InventoryUnknownCode.scanned_code == code,
+            )
+        ).scalar_one()
+        return unknown
+
+
+def _unknown_quantity(session_id: str, code: str) -> str:
+    return str(_unknown_row(session_id, code).quantity)
+
+
+def _extra_quantity(session_id: str, product_id: uuid.UUID) -> str | None:
+    with SessionLocal() as db:
+        extra = db.execute(
+            select(InventoryExtraItem).where(
+                InventoryExtraItem.session_id == uuid.UUID(session_id),
+                InventoryExtraItem.product_id == product_id,
+            )
+        ).scalar_one_or_none()
+        return str(extra.quantity) if extra is not None else None
 
 
 def _damage_count(session_id: str) -> int:
@@ -257,6 +284,41 @@ def test_manual_subtract_cannot_pass_damaged() -> None:
     assert body["detail"]["error"] == "DAMAGED_EXCEEDS_RESULTING_PHYSICAL_QUANTITY"
     assert _quantity(sid, product_id) == "5.0000"
     assert _damaged(sid, product_id) == "5.0000"
+    cleanup_inventory_test_data()
+
+
+def test_manual_physical_reduction_cannot_pass_damaged() -> None:
+    """fisico=10, dano=4: SET 3 y SUBTRACT 7 quedarian por debajo del dano."""
+    campaign_id, batch_id, operator_id = _ready_to_count()
+    product_id, _reference = batch_products(batch_id)[0]
+    _as_operator(operator_id)
+    sid = str(_start_session(campaign_id)["id"])
+    _post_event(sid, "MANUAL_ADD", product_id=product_id, quantity=10)
+    _post_event(sid, "DAMAGE_ADD", product_id=product_id, quantity=4, reason="parcial")
+
+    set_rejected = _post_event(sid, "MANUAL_SET", product_id=product_id, quantity=3)
+    assert set_rejected[0] == 409
+    assert set_rejected[1]["detail"]["error"] == "DAMAGED_EXCEEDS_RESULTING_PHYSICAL_QUANTITY"
+
+    subtract_rejected = _post_event(sid, "MANUAL_SUBTRACT", product_id=product_id, quantity=7)
+    assert subtract_rejected[0] == 409
+    assert subtract_rejected[1]["detail"]["error"] == "DAMAGED_EXCEEDS_RESULTING_PHYSICAL_QUANTITY"
+
+    # Ninguna cantidad se modifico.
+    assert _quantity(sid, product_id) == "10.0000"
+    assert _damaged(sid, product_id) == "4.0000"
+    cleanup_inventory_test_data()
+
+
+def test_manual_set_cannot_pass_damaged_quantity() -> None:
+    """fisico=5, dano=3, MANUAL_SET 2 -> 409 sin modificar cantidades."""
+    sid, _reference, product_id, _operator = _setup_with_count()
+    _post_event(sid, "DAMAGE_ADD", product_id=product_id, quantity=3, reason="parcial")
+    status, body = _post_event(sid, "MANUAL_SET", product_id=product_id, quantity=2)
+    assert status == 409
+    assert body["detail"]["error"] == "DAMAGED_EXCEEDS_RESULTING_PHYSICAL_QUANTITY"
+    assert _quantity(sid, product_id) == "5.0000"
+    assert _damaged(sid, product_id) == "3.0000"
     cleanup_inventory_test_data()
 
 
@@ -440,6 +502,57 @@ def test_damage_on_unknown_tracks_damaged_quantity() -> None:
         ).scalar_one()
         assert record.product_id is None
         assert record.scanned_code == "UNK-DAMAGE"
+    cleanup_inventory_test_data()
+
+
+def test_unknown_multi_qr_scan_creates_unknown() -> None:
+    campaign_id, _batch, operator_id = _ready_to_count()
+    _as_operator(operator_id)
+    sid = str(_start_session(campaign_id)["id"])
+    status, body = _post_event(sid, "MULTI_QR_SCAN", code="UNK-MULTI")
+    assert status == 200, body
+    assert body["product_id"] is None
+    assert body["resulting_quantity"] == "1.0000"
+    assert _unknown_quantity(sid, "UNK-MULTI") == "1.0000"
+    cleanup_inventory_test_data()
+
+
+def test_unknown_manual_adjustments_after_scan() -> None:
+    """Solo QR/MULTI crean el UNKNOWN; despues admite ADD/SUBTRACT/SET."""
+    campaign_id, _batch, operator_id = _ready_to_count()
+    _as_operator(operator_id)
+    sid = str(_start_session(campaign_id)["id"])
+    _post_event(sid, "QR_SCAN", code="UNK-MANUAL")
+    assert _unknown_quantity(sid, "UNK-MANUAL") == "1.0000"
+
+    added = _post_event(sid, "MANUAL_ADD", code="UNK-MANUAL", quantity=4)
+    assert added[0] == 200 and added[1]["resulting_quantity"] == "5.0000"
+    subtracted = _post_event(sid, "MANUAL_SUBTRACT", code="UNK-MANUAL", quantity=2)
+    assert subtracted[0] == 200 and subtracted[1]["resulting_quantity"] == "3.0000"
+    set_to = _post_event(sid, "MANUAL_SET", code="UNK-MANUAL", quantity=10)
+    assert set_to[0] == 200 and set_to[1]["resulting_quantity"] == "10.0000"
+    assert _unknown_quantity(sid, "UNK-MANUAL") == "10.0000"
+
+    # Nada de esto crea un producto ficticio.
+    with SessionLocal() as db:
+        fake = db.execute(
+            select(func.count())
+            .select_from(Product)
+            .where(Product.internal_reference == "UNK-MANUAL")
+        ).scalar_one()
+    assert fake == 0
+    cleanup_inventory_test_data()
+
+
+def test_unknown_manual_subtract_cannot_go_negative() -> None:
+    campaign_id, _batch, operator_id = _ready_to_count()
+    _as_operator(operator_id)
+    sid = str(_start_session(campaign_id)["id"])
+    _post_event(sid, "QR_SCAN", code="UNK-NEG")
+    status, body = _post_event(sid, "MANUAL_SUBTRACT", code="UNK-NEG", quantity=2)
+    assert status == 409
+    assert body["detail"]["error"] == "COUNT_WOULD_BE_NEGATIVE"
+    assert _unknown_quantity(sid, "UNK-NEG") == "1.0000"
     cleanup_inventory_test_data()
 
 
@@ -636,6 +749,85 @@ def test_extra_admin_endpoint_lists_synced_quantity_blind() -> None:
     cleanup_inventory_test_data()
 
 
+def test_extra_manual_set_zero_keeps_historical_row() -> None:
+    campaign_id, _batch, operator_id = _ready_to_count()
+    extra_id = create_standalone_product(f"TEST-EXTRAZ-{uuid.uuid4().hex[:6]}")
+    _as_operator(operator_id)
+    sid = str(_start_session(campaign_id)["id"])
+    _post_event(sid, "MANUAL_ADD", product_id=extra_id, quantity=5)
+    assert _extra_quantity(sid, extra_id) == "5.0000"
+
+    status, body = _post_event(sid, "MANUAL_SET", product_id=extra_id, quantity=0)
+    assert status == 200, body
+    assert _quantity(sid, extra_id) == "0.0000"
+    assert _extra_quantity(sid, extra_id) == "0.0000"  # fila historica, no borrada
+
+    as_user(PERMS_RECONCILE, roles=("MANAGER",))
+    default_rows = client.get(f"/api/v1/inventory/campaigns/{campaign_id}/extras").json()
+    with_zero = client.get(
+        f"/api/v1/inventory/campaigns/{campaign_id}/extras?include_zero=true"
+    ).json()
+    assert all(row["product_id"] != str(extra_id) for row in default_rows)
+    assert any(row["product_id"] == str(extra_id) for row in with_zero)
+    cleanup_inventory_test_data()
+
+
+def test_extra_quantity_stays_synced_with_official_total() -> None:
+    """QR, QR, SET 10, SUBTRACT 3, UNDO -> extra refleja el total final (10)."""
+    campaign_id, _batch, operator_id = _ready_to_count()
+    extra_id = create_standalone_product(f"TEST-EXTRASYNC-{uuid.uuid4().hex[:6]}")
+    _as_operator(operator_id)
+    sid = str(_start_session(campaign_id)["id"])
+    _post_event(sid, "QR_SCAN", product_id=extra_id)
+    _post_event(sid, "QR_SCAN", product_id=extra_id)
+    _post_event(sid, "MANUAL_SET", product_id=extra_id, quantity=10)
+    _status, subtracted = _post_event(sid, "MANUAL_SUBTRACT", product_id=extra_id, quantity=3)
+    assert _quantity(sid, extra_id) == "7.0000"
+    assert _extra_quantity(sid, extra_id) == "7.0000"
+
+    undo = client.post(
+        f"/api/v1/inventory/count-sessions/{sid}/events/{subtracted['event_id']}/undo",
+        json={},
+    )
+    assert undo.status_code == 200, undo.text
+    assert _quantity(sid, extra_id) == "10.0000"
+    assert _extra_quantity(sid, extra_id) == "10.0000"
+    cleanup_inventory_test_data()
+
+
+def test_worker_items_never_reveal_extra_classification() -> None:
+    """Obligatorio F006: el operador ve un PRODUCT normal, sin senales de extra."""
+    campaign_id, _batch, operator_id = _ready_to_count()
+    extra_id = create_standalone_product(f"TEST-EXTRABLI-{uuid.uuid4().hex[:6]}")
+    _as_operator(operator_id)
+    sid = str(_start_session(campaign_id)["id"])
+    scanned = _post_event(sid, "QR_SCAN", product_id=extra_id)
+    assert scanned[0] == 200
+
+    response = client.get(f"/api/v1/inventory/count-sessions/{sid}/items")
+    assert response.status_code == 200
+    row = next(item for item in response.json() if item["product_id"] == str(extra_id))
+    assert row["kind"] == "PRODUCT"
+    assert set(row) == {
+        "kind",
+        "product_id",
+        "internal_reference",
+        "name",
+        "quantity",
+        "damaged_quantity",
+    }
+    for forbidden in (
+        "is_extra",
+        "extra=true",
+        "warning",
+        "out_of_snapshot",
+        "expected=false",
+        "expected_quantity",
+    ):
+        assert forbidden not in response.text
+    cleanup_inventory_test_data()
+
+
 # ------------------------------ lista de dannos -------------------------------
 
 
@@ -755,6 +947,57 @@ def test_evidence_upload_download_and_validation() -> None:
     cleanup_inventory_test_data()
 
 
+def test_evidence_accepts_webp_and_rejects_oversized_file() -> None:
+    from app.core.config import get_settings
+
+    webp = b"RIFF" + (0).to_bytes(4, "little") + b"WEBP" + b"fake-webp-payload"
+    campaign_id, batch_id, operator_id = _ready_to_count()
+    product_id, _reference = batch_products(batch_id)[0]
+    _as_operator(operator_id)
+    sid = str(_start_session(campaign_id)["id"])
+    _post_event(sid, "MANUAL_ADD", product_id=product_id, quantity=3)
+
+    _status, first = _post_event(
+        sid, "DAMAGE_ADD", product_id=product_id, quantity=1, reason="webp"
+    )
+    _status, second = _post_event(
+        sid, "DAMAGE_ADD", product_id=product_id, quantity=1, reason="grande"
+    )
+    with SessionLocal() as db:
+        by_event = {
+            str(row.event_id): str(row.id)
+            for row in db.execute(
+                select(InventoryDamage).where(InventoryDamage.session_id == uuid.UUID(sid))
+            ).scalars()
+        }
+    webp_id = by_event[str(uuid.UUID(str(first["event_id"])))]
+    big_id = by_event[str(uuid.UUID(str(second["event_id"])))]
+
+    _operator_with_evidence_perm(operator_id)
+    uploaded = client.post(
+        f"/api/v1/inventory/damages/{webp_id}/evidence",
+        files={"file": ("fotowebp", webp, "image/webp")},
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    assert uploaded.json()["content_type"] == "image/webp"
+    download = client.get(f"/api/v1/inventory/damages/{webp_id}/evidence")
+    assert download.status_code == 200
+    assert download.content == webp
+
+    max_bytes = get_settings().MAX_EVIDENCE_MB * 1024 * 1024
+    oversized = b"\x89PNG\r\n\x1a\n" + b"a" * (max_bytes + 1)
+    too_big = client.post(
+        f"/api/v1/inventory/damages/{big_id}/evidence",
+        files={"file": ("grande.png", oversized, "image/png")},
+    )
+    assert too_big.status_code == 413
+    assert too_big.json()["detail"]["error"] == "EVIDENCE_TOO_LARGE"
+    with SessionLocal() as db:
+        record = db.get(InventoryDamage, uuid.UUID(big_id))
+        assert record is not None and record.evidence_path is None
+    cleanup_inventory_test_data()
+
+
 def test_evidence_permission_rules() -> None:
     campaign_id, batch_id, operator_id = _ready_to_count()
     product_id, _reference = batch_products(batch_id)[0]
@@ -781,6 +1024,13 @@ def test_evidence_permission_rules() -> None:
         files={"file": ("a.png", _PNG, "image/png")},
     )
     assert owner.status_code == 200, owner.text
+
+    # El dueno tambien LEE su evidencia aunque solo tenga inventory.count.
+    _as_operator(operator_id)
+    owner_read = client.get(f"/api/v1/inventory/damages/{open_damage_id}/evidence")
+    assert owner_read.status_code == 200
+    assert owner_read.content == _PNG
+    _operator_with_evidence_perm(operator_id)
 
     # Termino la sesion: el dueno ya no puede subir (no esta IN_PROGRESS).
     _as_operator(operator_id)
@@ -947,6 +1197,91 @@ def test_batch_with_damage_is_ordered_and_atomic() -> None:
     cleanup_inventory_test_data()
 
 
+def test_batch_mixed_known_unknown_extra_and_damage() -> None:
+    """Lote mixto: QR conocido + QR unknown + QR extra + DAMAGE_ADD, orden 1..4."""
+    campaign_id, batch_id, operator_id = _ready_to_count()
+    product_a = batch_products(batch_id)[0][0]
+    extra_b = create_standalone_product(f"TEST-EXTRABAT-{uuid.uuid4().hex[:6]}")
+    _as_operator(operator_id)
+    sid = str(_start_session(campaign_id)["id"])
+
+    payload = {
+        "events": [
+            {
+                "client_event_uuid": str(uuid.uuid4()),
+                "event_type": "QR_SCAN",
+                "product_id": str(product_a),
+            },
+            {
+                "client_event_uuid": str(uuid.uuid4()),
+                "event_type": "QR_SCAN",
+                "scanned_code": "XYZ001",
+            },
+            {
+                "client_event_uuid": str(uuid.uuid4()),
+                "event_type": "QR_SCAN",
+                "product_id": str(extra_b),
+            },
+            {
+                "client_event_uuid": str(uuid.uuid4()),
+                "event_type": "DAMAGE_ADD",
+                "product_id": str(product_a),
+                "quantity": "1",
+                "reason": "lote mixto",
+            },
+        ]
+    }
+    response = client.post(f"/api/v1/inventory/count-sessions/{sid}/events/batch", json=payload)
+    assert response.status_code == 200, response.text
+    assert [item["server_sequence"] for item in response.json()["items"]] == [1, 2, 3, 4]
+
+    assert _quantity(sid, product_a) == "1.0000"
+    assert _damaged(sid, product_a) == "1.0000"
+    assert _quantity(sid, extra_b) == "1.0000"
+    assert _extra_quantity(sid, extra_b) == "1.0000"
+    assert _unknown_quantity(sid, "XYZ001") == "1.0000"
+    assert _damage_count(sid) == 1
+    cleanup_inventory_test_data()
+
+
+def test_batch_with_unknown_is_atomic_on_damage_error() -> None:
+    """Rollback total: un DAMAGE sin reason deshace tambien el unknown del lote."""
+    campaign_id, _batch, operator_id = _ready_to_count()
+    _as_operator(operator_id)
+    sid = str(_start_session(campaign_id)["id"])
+    payload = {
+        "events": [
+            {
+                "client_event_uuid": str(uuid.uuid4()),
+                "event_type": "QR_SCAN",
+                "scanned_code": "XYZ-ATOMIC",
+            },
+            {
+                "client_event_uuid": str(uuid.uuid4()),
+                "event_type": "DAMAGE_ADD",
+                "scanned_code": "XYZ-ATOMIC",
+                "quantity": "1",
+            },
+        ]
+    }
+    failed = client.post(f"/api/v1/inventory/count-sessions/{sid}/events/batch", json=payload)
+    assert failed.status_code == 422
+    with SessionLocal() as db:
+        unknowns = db.execute(
+            select(func.count())
+            .select_from(InventoryUnknownCode)
+            .where(InventoryUnknownCode.session_id == uuid.UUID(sid))
+        ).scalar_one()
+        events = db.execute(
+            select(func.count())
+            .select_from(InventoryCountEvent)
+            .where(InventoryCountEvent.session_id == uuid.UUID(sid))
+        ).scalar_one()
+    assert unknowns == 0
+    assert events == 0
+    cleanup_inventory_test_data()
+
+
 # ------------------------------ concurrencia ----------------------------------
 
 
@@ -957,7 +1292,7 @@ def test_concurrent_damage_adds_serialize_without_losing_rows() -> None:
     sid = str(_start_session(campaign_id)["id"])
     _post_event(sid, "MANUAL_ADD", product_id=product_id, quantity=10)
     session_uuid = uuid.UUID(sid)
-    total_concurrent = 5
+    total_concurrent = 10
 
     def worker() -> None:
         with SessionLocal() as db:
@@ -982,6 +1317,15 @@ def test_concurrent_damage_adds_serialize_without_losing_rows() -> None:
     assert _quantity(sid, product_id) == "10.0000"
     assert _damaged(sid, product_id) == f"{total_concurrent}.0000"
     assert _damage_count(sid) == total_concurrent
+
+    # Un ADD adicional rebasa el fisico: 409, nunca 11.
+    status, body = _post_event(
+        sid, "DAMAGE_ADD", product_id=product_id, quantity=1, reason="demasiado"
+    )
+    assert status == 409
+    assert body["detail"]["error"] == "DAMAGE_EXCEEDS_PHYSICAL_QUANTITY"
+    assert _damaged(sid, product_id) == "10.0000"
+
     with SessionLocal() as db:
         sequences = list(
             db.execute(
@@ -992,6 +1336,98 @@ def test_concurrent_damage_adds_serialize_without_losing_rows() -> None:
         )
     assert len(sequences) == 1 + total_concurrent
     assert len(set(sequences)) == len(sequences)
+    cleanup_inventory_test_data()
+
+
+def test_concurrent_unknown_qr_scans_serialize() -> None:
+    """Prueba real: 20 QR concurrentes del mismo UNKNOWN -> quantity 20, 0 perdidos."""
+    campaign_id, _batch, operator_id = _ready_to_count()
+    _as_operator(operator_id)
+    sid = str(_start_session(campaign_id)["id"])
+    session_uuid = uuid.UUID(sid)
+    total_concurrent = 20
+
+    def worker() -> None:
+        with SessionLocal() as db:
+            event_service.process_event(
+                db,
+                session_id=session_uuid,
+                actor_id=operator_id,
+                payload=event_service.EventInput(
+                    client_event_uuid=uuid.uuid4(),
+                    event_type=CountEventType.QR_SCAN,
+                    scanned_code="UNK-CONC",
+                    source=EventSource.CAMERA,
+                ),
+            )
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [pool.submit(worker) for _ in range(total_concurrent)]
+        for future in futures:
+            future.result()
+
+    assert _unknown_quantity(sid, "UNK-CONC") == f"{total_concurrent}.0000"
+    with SessionLocal() as db:
+        unknowns = list(
+            db.execute(
+                select(InventoryUnknownCode).where(
+                    InventoryUnknownCode.session_id == session_uuid
+                )
+            ).scalars()
+        )
+        sequences = list(
+            db.execute(
+                select(InventoryCountEvent.server_sequence).where(
+                    InventoryCountEvent.session_id == session_uuid
+                )
+            ).scalars()
+        )
+    assert len(unknowns) == 1  # unica (session_id, scanned_code)
+    assert len(sequences) == total_concurrent
+    assert len(set(sequences)) == total_concurrent
+    cleanup_inventory_test_data()
+
+
+def test_concurrent_extra_scans_sync_totals_and_extra_rows() -> None:
+    """Prueba real: 20 scans concurrentes del mismo extra -> totals 20, extra 20."""
+    campaign_id, _batch, operator_id = _ready_to_count()
+    extra_id = create_standalone_product(f"TEST-EXTRACON-{uuid.uuid4().hex[:6]}")
+    _as_operator(operator_id)
+    sid = str(_start_session(campaign_id)["id"])
+    session_uuid = uuid.UUID(sid)
+    total_concurrent = 20
+
+    def worker() -> None:
+        with SessionLocal() as db:
+            event_service.process_event(
+                db,
+                session_id=session_uuid,
+                actor_id=operator_id,
+                payload=event_service.EventInput(
+                    client_event_uuid=uuid.uuid4(),
+                    event_type=CountEventType.QR_SCAN,
+                    product_id=extra_id,
+                    source=EventSource.CAMERA,
+                ),
+            )
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [pool.submit(worker) for _ in range(total_concurrent)]
+        for future in futures:
+            future.result()
+
+    assert _quantity(sid, extra_id) == f"{total_concurrent}.0000"
+    assert _extra_quantity(sid, extra_id) == f"{total_concurrent}.0000"
+    with SessionLocal() as db:
+        sequences = list(
+            db.execute(
+                select(InventoryCountEvent.server_sequence).where(
+                    InventoryCountEvent.session_id == session_uuid
+                )
+            ).scalars()
+        )
+    assert len(sequences) == total_concurrent
+    assert len(set(sequences)) == total_concurrent
     cleanup_inventory_test_data()
 
 
