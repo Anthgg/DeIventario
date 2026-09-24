@@ -132,10 +132,39 @@ class ImportBatchType(enum.StrEnum):
 
 
 class ImportBatchStatus(enum.StrEnum):
-    """Estados de un lote de importacion."""
+    """Estados de un lote de importacion (pipeline Odoo)."""
 
     PENDING = "PENDING"
     PROCESSING = "PROCESSING"
     COMPLETED = "COMPLETED"
     COMPLETED_WITH_WARNINGS = "COMPLETED_WITH_WARNINGS"
     FAILED = "FAILED"
+
+
+class DocumentStatus(enum.StrEnum):
+    """Estados de un documento oficial generado (F010)."""
+
+    GENERATED = "GENERATED"
+    SUPERSEDED = "SUPERSEDED"
+    FAILED = "FAILED"
+
+
+class DocumentFormat(enum.StrEnum):
+    """Formato de archivo de un documento oficial."""
+
+    PDF = "PDF"
+    XLSX = "XLSX"
+
+
+class DocumentModule(enum.StrEnum):
+    """Modulo dominio al que pertenece el documento oficial."""
+
+    INVENTORY = "INVENTORY"
+
+
+class CurrencyStyle(enum.StrEnum):
+    """Estilo de formato monetario de la organizacion (F010)."""
+
+    SYMBOL_BEFORE = "SYMBOL_BEFORE"
+    SYMBOL_AFTER = "SYMBOL_AFTER"
+    CODE_SUFFIX = "CODE_SUFFIX"

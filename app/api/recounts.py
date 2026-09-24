@@ -46,7 +46,10 @@ def _handle(exc: Exception) -> HTTPException:
         detail.update(exc.payload)
         return HTTPException(status_code=exc.status_code, detail=detail)
     if isinstance(exc, CampaignError):
-        return HTTPException(status_code=exc.status_code, detail={"message": str(exc)})
+        campaign_detail: dict[str, Any] = {"message": str(exc)}
+        if exc.code:
+            campaign_detail["error"] = exc.code
+        return HTTPException(status_code=exc.status_code, detail=campaign_detail)
     return HTTPException(status_code=400, detail={"message": "Error de reconteo"})
 
 

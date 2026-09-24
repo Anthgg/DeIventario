@@ -44,6 +44,8 @@ EXPECTED_TABLES = (
     "alembic_version",
     "audit_events",
     "contacts",
+    "document_exports",
+    "export_profiles",
     "import_batches",
     "import_errors",
     "inventory_assignments",
@@ -58,6 +60,7 @@ EXPECTED_TABLES = (
     "inventory_snapshot_items",
     "inventory_unknown_codes",
     "locations",
+    "organization_settings",
     "permissions",
     "product_supplier_refs",
     "products",
@@ -70,6 +73,11 @@ EXPECTED_TABLES = (
 )
 
 EXPECTED_CHECK_CONSTRAINTS = (
+    "ck_document_exports_documentformat",
+    "ck_document_exports_documentmodule",
+    "ck_document_exports_documentstatus",
+    "ck_document_exports_filesize_nonnegative",
+    "ck_export_profiles_documentformat",
     "ck_import_batches_importbatchstatus",
     "ck_import_batches_importbatchtype",
     "ck_inventory_assignments_assignmentstatus",
@@ -80,6 +88,8 @@ EXPECTED_CHECK_CONSTRAINTS = (
     "ck_inventory_count_sessions_sessiontype",
     "ck_inventory_reconciliations_reconciliationstatus",
     "ck_inventory_snapshot_items_costsource",
+    "ck_organization_settings_currencystyle",
+    "ck_organization_settings_next_document_number_positive",
 )
 
 

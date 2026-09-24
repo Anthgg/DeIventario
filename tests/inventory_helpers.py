@@ -7,15 +7,19 @@ import datetime as dt
 import decimal
 import uuid
 from pathlib import Path
+from typing import Any
 
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, or_, select
 from sqlalchemy import false as sa_false
+from sqlalchemy.orm import Session
 
 from app.db.session import SessionLocal
 from app.main import app
 from app.models import (
     AuditEvent,
+    DocumentExport,
+    ExportProfile,
     ImportBatch,
     InventoryAssignment,
     InventoryCampaign,
@@ -29,6 +33,7 @@ from app.models import (
     InventorySnapshotItem,
     InventoryUnknownCode,
     Location,
+    OrganizationSettings,
     Product,
     StockSnapshot,
     User,
@@ -53,6 +58,11 @@ PERMS_DAMAGE_REPORT = {"damage.report"}
 PERMS_COUNT = {"inventory.count"}
 PERMS_RECOUNT = {"inventory.recount"}
 PERMS_READ_RECOUNT = {"inventory.read", "inventory.recount"}
+PERMS_SYSTEM = {"system.manage"}
+PERMS_EXPORTS_CREATE = {"exports.create"}
+PERMS_EXPORTS_READ = {"exports.read"}
+PERMS_EXPORTS = {"exports.create", "exports.read"}
+PERMS_DOCS_ALL = {"exports.create", "exports.read", "system.manage"}
 
 
 def as_user(permissions: set[str], *, roles: tuple[str, ...] = ()) -> uuid.UUID:
@@ -295,6 +305,27 @@ def cleanup_inventory_test_data() -> None:
                 delete(InventoryCountSession).where(InventoryCountSession.id.in_(session_ids))
             )
 
+        # F010: los documentos oficiales referencian campanas (RESTRICT) y
+        # guardan archivos; se borran ANTES que las campanas.
+        document_rows = list(
+            db.execute(
+                select(DocumentExport.id, DocumentExport.file_path).where(
+                    DocumentExport.inventory_campaign_id.in_(campaign_ids)
+                    if campaign_ids
+                    else sa_false()
+                )
+            ).all()
+        )
+        if document_rows:
+            document_ids = [row[0] for row in document_rows]
+            db.execute(delete(DocumentExport).where(DocumentExport.id.in_(document_ids)))
+            db.execute(delete(AuditEvent).where(AuditEvent.entity_id.in_(document_ids)))
+        from app.core.config import get_settings as get_app_settings
+
+        for relative in document_paths(Path(get_app_settings().DOCUMENT_DIR), document_rows):
+            with contextlib.suppress(OSError):
+                relative.unlink()
+
         if campaign_ids:
             db.execute(
                 delete(InventorySnapshotItem).where(
@@ -330,6 +361,12 @@ def cleanup_inventory_test_data() -> None:
             db.execute(delete(User).where(User.id.in_(user_ids)))
         if session_ids:
             db.execute(delete(AuditEvent).where(AuditEvent.entity_id.in_(session_ids)))
+
+        # F010: la configuracion singleton de marca vuelve a valores por defecto
+        # y se limpian los perfiles de exportacion materializados por tests.
+        _reset_organization_settings(db)
+        db.execute(delete(ExportProfile))
+        db.execute(delete(AuditEvent).where(AuditEvent.entity_type == "organization_settings"))
         db.commit()
 
 
@@ -367,3 +404,33 @@ def evidence_paths(evidence_dir: Path, relatives: list[str | None]) -> list[Path
         if candidate.parent == base and candidate.is_file():
             result.append(candidate)
     return result
+
+
+def document_paths(base_dir: Path, rows: list[Any]) -> list[Path]:
+    """Resuelve rutas de documentos oficiales confinadas al directorio."""
+    base = base_dir.resolve()
+    result: list[Path] = []
+    for _doc_id, relative in rows:
+        if not relative:
+            continue
+        candidate = (base / relative).resolve()
+        if candidate.is_relative_to(base) and candidate.is_file():
+            result.append(candidate)
+    return result
+
+
+def _reset_organization_settings(db: Session) -> None:
+    """Elimina el singleton de configuracion (marca) para aislar cada test."""
+    rows = list(db.execute(select(OrganizationSettings)).scalars())
+    if not rows:
+        return
+    from app.core.config import get_settings as get_app_settings
+
+    base = Path(get_app_settings().BRANDING_DIR).resolve()
+    for row in rows:
+        if row.logo_path:
+            candidate = (base / row.logo_path).resolve()
+            if candidate.is_relative_to(base) and candidate.is_file():
+                with contextlib.suppress(OSError):
+                    candidate.unlink()
+    db.execute(delete(OrganizationSettings))

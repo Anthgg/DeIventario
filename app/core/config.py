@@ -102,6 +102,14 @@ class Settings(BaseSettings):
         default="./storage/evidence",
         validation_alias=AliasChoices("EVIDENCE_DIR", "STORAGE_EVIDENCE_DIR"),
     )
+    BRANDING_DIR: str = Field(
+        default="./storage/branding",
+        validation_alias=AliasChoices("BRANDING_DIR", "STORAGE_BRANDING_DIR"),
+    )
+    DOCUMENT_DIR: str = Field(
+        default="./storage/documents",
+        validation_alias=AliasChoices("DOCUMENT_DIR", "STORAGE_DOCUMENTS_DIR"),
+    )
     MAX_UPLOAD_MB: int = Field(
         default=25,
         validation_alias=AliasChoices("MAX_UPLOAD_MB", "STORAGE_MAX_UPLOAD_MB"),
@@ -109,6 +117,10 @@ class Settings(BaseSettings):
     MAX_EVIDENCE_MB: int = Field(
         default=8,
         validation_alias=AliasChoices("MAX_EVIDENCE_MB", "EVIDENCE_MAX_MB"),
+    )
+    MAX_BRANDING_LOGO_MB: int = Field(
+        default=5,
+        validation_alias=AliasChoices("MAX_BRANDING_LOGO_MB", "BRANDING_MAX_LOGO_MB"),
     )
 
     # -- LOCALIZACION --

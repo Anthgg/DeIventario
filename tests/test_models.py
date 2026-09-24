@@ -15,6 +15,8 @@ EXPECTED_TABLES = frozenset(
     {
         "audit_events",
         "contacts",
+        "document_exports",
+        "export_profiles",
         "import_batches",
         "import_errors",
         "inventory_assignments",
@@ -29,6 +31,7 @@ EXPECTED_TABLES = frozenset(
         "inventory_snapshot_items",
         "inventory_unknown_codes",
         "locations",
+        "organization_settings",
         "permissions",
         "product_supplier_refs",
         "products",
@@ -42,6 +45,8 @@ EXPECTED_TABLES = frozenset(
 )
 
 ENUM_COLUMNS: dict[str, tuple[str, ...]] = {
+    "document_exports": ("module", "status", "format"),
+    "export_profiles": ("document_format",),
     "import_batches": ("import_type", "status"),
     "inventory_assignments": ("status",),
     "inventory_campaigns": ("status",),
@@ -49,6 +54,7 @@ ENUM_COLUMNS: dict[str, tuple[str, ...]] = {
     "inventory_count_sessions": ("session_type", "status"),
     "inventory_reconciliations": ("status",),
     "inventory_snapshot_items": ("cost_source",),
+    "organization_settings": ("currency_style",),
 }
 
 NUMERIC_COLUMNS: dict[str, tuple[str, ...]] = {
@@ -84,6 +90,7 @@ NUMERIC_COLUMNS: dict[str, tuple[str, ...]] = {
 
 JSONB_COLUMNS: dict[str, str] = {
     "audit_events": "metadata",
+    "document_exports": "metadata",
     "import_batches": "metadata",
     "inventory_count_events": "metadata",
     "stock_movements": "raw_data",
@@ -109,6 +116,8 @@ EXPECTED_UNIQUE_CONSTRAINTS: dict[str, tuple[str, ...]] = {
     "inventory_unknown_codes": ("session_id", "scanned_code"),
     "inventory_reconciliations": ("inventory_campaign_id", "product_id"),
     "product_supplier_refs": ("product_id", "contact_id"),
+    "document_exports": ("document_number",),
+    "export_profiles": ("code",),
 }
 
 EXPECTED_INDEXES: tuple[tuple[str, str], ...] = (
@@ -128,6 +137,8 @@ EXPECTED_INDEXES: tuple[tuple[str, str], ...] = (
     ("audit_events", "inventory_campaign_id"),
     ("audit_events", "entity_type"),
     ("audit_events", "occurred_at"),
+    ("document_exports", "status"),
+    ("document_exports", "inventory_campaign_id"),
 )
 
 

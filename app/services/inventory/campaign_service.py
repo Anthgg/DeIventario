@@ -28,9 +28,18 @@ from app.services.inventory import snapshot_service
 
 
 class CampaignError(Exception):
-    def __init__(self, message: str, status_code: int = 400) -> None:
+    def __init__(
+        self, message: str, status_code: int = 400, code: str | None = None
+    ) -> None:
         super().__init__(message)
         self.status_code = status_code
+        self.code = code
+
+
+def require_not_closed(campaign: InventoryCampaign) -> None:
+    """F010: una campana CLOSED es inmutable para todo cambio posterior."""
+    if campaign.status is CampaignStatus.CLOSED:
+        raise CampaignError("La campana esta cerrada", 409, "CAMPAIGN_CLOSED")
 
 
 def _now() -> dt.datetime:

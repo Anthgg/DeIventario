@@ -62,6 +62,10 @@ storage/evidence/*
 !storage/uploads/.gitkeep
 !storage/exports/.gitkeep
 !storage/evidence/.gitkeep
+storage/branding/*
+storage/documents/*
+!storage/branding/.gitkeep
+!storage/documents/.gitkeep
 
 # --------------------------------- Logs --------------------------------------
 logs/

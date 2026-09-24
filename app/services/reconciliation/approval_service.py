@@ -37,6 +37,7 @@ def approve(
 ) -> dict[str, object]:
     """Aprueba toda la conciliacion de la campana (§42-§45)."""
     campaign = campaign_service.lock_campaign(db, campaign_id)
+    campaign_service.require_not_closed(campaign)
     if campaign.status is CampaignStatus.APPROVED:
         db.commit()
         return {

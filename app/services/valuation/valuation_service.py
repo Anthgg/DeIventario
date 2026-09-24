@@ -191,6 +191,8 @@ def _compute(
 
 
 def _require_campaign_approved(campaign: InventoryCampaign) -> None:
+    if campaign.status is CampaignStatus.CLOSED:
+        raise ValuationError("La campana esta cerrada", 409, "CAMPAIGN_CLOSED")
     if campaign.status is not CampaignStatus.APPROVED:
         raise ValuationError(
             "La campana no esta aprobada", 409, "CAMPAIGN_NOT_APPROVED"

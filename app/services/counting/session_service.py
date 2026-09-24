@@ -70,6 +70,8 @@ def assert_campaign_active(db: Session, session: InventoryCountSession) -> Inven
     if campaign_service.expire_campaign_if_due(db, campaign):
         db.commit()
         raise CountError("La campana expiro", 409, "CAMPAIGN_EXPIRED")
+    if campaign.status is CampaignStatus.CLOSED:
+        raise CountError("La campana esta cerrada", 409, "CAMPAIGN_CLOSED")
     # F007: RECOUNT es un estado operativo (la campana esta en reconteo).
     if campaign.status not in (CampaignStatus.IN_PROGRESS, CampaignStatus.RECOUNT):
         raise CountError("La campana no esta en curso", 409, "CAMPAIGN_NOT_ACTIVE")
@@ -85,6 +87,8 @@ def start_session(
     if campaign_service.expire_campaign_if_due(db, campaign):
         db.commit()
         raise CountError("La campana expiro", 409, "CAMPAIGN_EXPIRED")
+    if campaign.status is CampaignStatus.CLOSED:
+        raise CountError("La campana esta cerrada", 409, "CAMPAIGN_CLOSED")
     if campaign.status not in (CampaignStatus.IN_PROGRESS, CampaignStatus.RECOUNT):
         raise CountError("La campana no esta en curso", 409, "CAMPAIGN_NOT_ACTIVE")
     if campaign.deadline_at is not None and campaign.deadline_at <= _now():

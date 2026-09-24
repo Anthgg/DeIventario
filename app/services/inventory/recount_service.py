@@ -174,6 +174,7 @@ def request_recount(
 ) -> InventoryRecount:
     """Solicita un reconteo ciego y crea su assignment (estado ASSIGNED)."""
     campaign = campaign_service.lock_campaign(db, campaign_id)
+    campaign_service.require_not_closed(campaign)
     campaign_service.check_version(campaign, expected_version)
     if campaign.status not in REQUESTABLE_CAMPAIGN_STATUSES:
         raise RecountError(

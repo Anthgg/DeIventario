@@ -261,6 +261,7 @@ def prepare(
 ) -> dict[str, object]:
     """Prepara (o refresca) la conciliacion de la campana (§20-§25)."""
     campaign = campaign_service.lock_campaign(db, campaign_id)
+    campaign_service.require_not_closed(campaign)
     fingerprint = comparison_service.source_fingerprint(db, campaign_id)
     already_prepared = (
         campaign.reconciliation_prepared_at is not None
@@ -436,6 +437,7 @@ def select_default_session(
 ) -> dict[str, object]:
     """Elige la sesion SUBMITTED como conteo oficial de TODOS los productos."""
     campaign = campaign_service.lock_campaign(db, campaign_id)
+    campaign_service.require_not_closed(campaign)
     campaign_service.check_version(campaign, expected_version)
     if campaign.status is CampaignStatus.APPROVED:
         raise ReconciliationError(
@@ -506,6 +508,7 @@ def override_product(
 ) -> dict[str, object]:
     """Selecciona el conteo oficial de UN producto (o edita reason/observation)."""
     campaign = campaign_service.lock_campaign(db, campaign_id)
+    campaign_service.require_not_closed(campaign)
     if campaign.status is CampaignStatus.APPROVED:
         raise ReconciliationError(
             "La conciliacion esta aprobada: operacion no permitida",
