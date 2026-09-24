@@ -84,6 +84,12 @@ class InventoryCampaign(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     reconciliation_source_sha256: Mapped[str | None] = mapped_column(sa.String(64))
 
+    # F009: valorizacion economica de la conciliacion APPROVED.
+    valuation_calculated_at: Mapped[dt.datetime | None] = mapped_column(
+        sa.DateTime(timezone=True)
+    )
+    valuation_source_sha256: Mapped[str | None] = mapped_column(sa.String(64))
+
     location: Mapped[Location | None] = relationship()
     snapshot_items: Mapped[list[InventorySnapshotItem]] = relationship(
         back_populates="campaign"
