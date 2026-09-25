@@ -5,25 +5,25 @@ Anti formula-injection: todo texto pasa por ``excel_safe`` via ``write_sheet``.
 
 from __future__ import annotations
 
+import datetime as dt
 from typing import Any
 
 from openpyxl import Workbook
 
 from app.documents.engine.context import InventoryDocContext
-from app.documents.engine.formatting import to_decimal
 from app.documents.engine.xlsx import to_bytes, write_sheet
 
 SHEET_NAMES = (
     "Resumen",
-    "Valorizacion",
-    "Diferencias",
-    "Dannos",
-    "Excedentes",
     "Conciliacion",
     "Sesiones",
-    "Eventos_Conteo",
-    "Rastreo",
-    "Metadatos",
+    "Conteos",
+    "Eventos",
+    "Danos",
+    "Extras",
+    "Unknowns",
+    "Reconteos",
+    "Auditoria",
 )
 
 
@@ -32,41 +32,26 @@ def _product_columns(item: dict[str, Any]) -> tuple[str, str]:
     return (str(product.get("internal_reference") or ""), str(product.get("name") or ""))
 
 
-def _valuation_rows(items: list[dict[str, Any]]) -> list[list[Any]]:
-    rows: list[list[Any]] = []
-    for item in items:
-        ref, name = _product_columns(item)
-        rows.append(
-            [
-                ref,
-                name,
-                item.get("expected_quantity"),
-                item.get("approved_physical_quantity"),
-                item.get("missing_quantity"),
-                item.get("surplus_quantity"),
-                item.get("damaged_quantity"),
-                item.get("effective_unit_cost"),
-                item.get("currency"),
-                item.get("missing_cost_value"),
-                item.get("damage_cost_value"),
-                item.get("surplus_cost_value"),
-                item.get("affected_sale_value"),
-            ]
-        )
-    return rows
+def _datetime_value(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    try:
+        return dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value
 
 
-def _summary_rows(ctx: InventoryDocContext) -> list[list[Any]]:
+def _summary_rows(ctx: InventoryDocContext, extra: dict[str, Any]) -> list[list[Any]]:
     valuation = ctx.valuation
     summary = valuation.get("summary") or {}
     campaign = valuation.get("campaign") or ctx.campaign
-    return [
+    rows: list[list[Any]] = [
         ["campana_code", campaign.get("code")],
         ["campana_name", campaign.get("name")],
         ["campana_status", campaign.get("status")],
         ["campana_version", campaign.get("version")],
-        ["approved_at", campaign.get("approved_at")],
-        ["valuation_calculated_at", valuation.get("calculated_at")],
+        ["approved_at", _datetime_value(campaign.get("approved_at"))],
+        ["valuation_calculated_at", _datetime_value(valuation.get("calculated_at"))],
         ["currency", valuation.get("currency")],
         ["items_count", len(valuation.get("items") or [])],
         ["total_missing_units", summary.get("total_missing_units")],
@@ -79,30 +64,29 @@ def _summary_rows(ctx: InventoryDocContext) -> list[list[Any]]:
         ["total_confirmed_loss_cost", summary.get("total_confirmed_loss_cost")],
         ["valuation_warnings", ", ".join(str(w) for w in valuation.get("warnings") or [])],
         ["document_warnings", ", ".join(ctx.warnings)],
+        ["document_number", ctx.document_number],
+        ["document_type", ctx.document_type],
+        ["title", ctx.title],
+        ["generated_at", ctx.generated_at],
+        ["generated_by", ctx.generated_by_label],
+        ["organization_legal_name", ctx.branding.legal_name],
+        ["organization_tax_id", ctx.branding.tax_id],
+        ["organization_tax_id_label", ctx.branding.tax_id_label],
+        ["currency_style", ctx.branding.currency_style],
+        ["date_format", ctx.branding.date_format],
+        ["branding_settings_version", ctx.branding.settings_version],
+        ["branding_logo_sha256", ctx.branding.logo_sha256],
+        ["sessions_count", len(ctx.sessions)],
+        ["counts_count", len(ctx.counts)],
+        ["events_count", len(ctx.events)],
+        ["damages_count", len(ctx.damages)],
+        ["extras_count", len(ctx.extras)],
+        ["unknowns_count", len(ctx.unknowns)],
+        ["recounts_count", len(ctx.recounts)],
+        ["audit_events_count", len(ctx.audit_events)],
+        ["warnings", ", ".join(ctx.warnings)],
     ]
-
-
-def _difference_rows(items: list[dict[str, Any]]) -> list[list[Any]]:
-    rows: list[list[Any]] = []
-    for item in items:
-        missing = to_decimal(item.get("missing_quantity")) or 0
-        surplus = to_decimal(item.get("surplus_quantity")) or 0
-        if missing == 0 and surplus == 0:
-            continue
-        ref, name = _product_columns(item)
-        rows.append(
-            [
-                ref,
-                name,
-                item.get("expected_quantity"),
-                item.get("approved_physical_quantity"),
-                item.get("missing_quantity"),
-                item.get("surplus_quantity"),
-                item.get("missing_cost_value"),
-                item.get("surplus_cost_value"),
-                item.get("currency"),
-            ]
-        )
+    rows.extend([[key, value] for key, value in extra.items()])
     return rows
 
 
@@ -164,6 +148,85 @@ def _event_rows(events: list[dict[str, Any]]) -> list[list[Any]]:
     ]
 
 
+def _count_rows(counts: list[dict[str, Any]]) -> list[list[Any]]:
+    return [
+        [
+            count.get("session_number"),
+            count.get("product_reference"),
+            count.get("product_name"),
+            count.get("quantity"),
+            count.get("damaged_quantity"),
+            count.get("updated_at"),
+        ]
+        for count in counts
+    ]
+
+
+def _damage_rows(damages: list[dict[str, Any]]) -> list[list[Any]]:
+    return [
+        [
+            damage.get("session_number"),
+            damage.get("product_reference"),
+            damage.get("scanned_code"),
+            damage.get("action"),
+            damage.get("quantity"),
+            damage.get("reason"),
+            damage.get("observation"),
+            damage.get("event_id"),
+            damage.get("created_by"),
+            damage.get("created_at"),
+            damage.get("has_evidence"),
+        ]
+        for damage in damages
+    ]
+
+
+def _extra_rows(extras: list[dict[str, Any]]) -> list[list[Any]]:
+    return [
+        [
+            extra.get("session_number"),
+            extra.get("product_reference"),
+            extra.get("product_name"),
+            extra.get("quantity"),
+            extra.get("first_detected_at"),
+        ]
+        for extra in extras
+    ]
+
+
+def _unknown_rows(unknowns: list[dict[str, Any]]) -> list[list[Any]]:
+    return [
+        [
+            unknown.get("session_number"),
+            unknown.get("scanned_code"),
+            unknown.get("quantity"),
+            unknown.get("damaged_quantity"),
+            unknown.get("resolved_product_reference"),
+            unknown.get("resolved_by"),
+            unknown.get("resolved_at"),
+        ]
+        for unknown in unknowns
+    ]
+
+
+def _recount_rows(recounts: list[dict[str, Any]]) -> list[list[Any]]:
+    return [
+        [
+            recount.get("status"),
+            recount.get("requested_by"),
+            recount.get("assigned_to"),
+            recount.get("source_session_number"),
+            recount.get("resulting_session_number"),
+            recount.get("reason"),
+            recount.get("started_at"),
+            recount.get("completed_at"),
+            recount.get("cancelled_at"),
+            recount.get("cancel_reason"),
+        ]
+        for recount in recounts
+    ]
+
+
 def _audit_rows(audit_events: list[dict[str, Any]]) -> list[list[Any]]:
     return [
         [
@@ -178,106 +241,11 @@ def _audit_rows(audit_events: list[dict[str, Any]]) -> list[list[Any]]:
     ]
 
 
-def _metadata_rows(ctx: InventoryDocContext, extra: dict[str, Any]) -> list[list[Any]]:
-    branding = ctx.branding
-    rows: list[list[Any]] = [
-        ["document_number", ctx.document_number],
-        ["document_type", ctx.document_type],
-        ["title", ctx.title],
-        ["generated_at", ctx.generated_at.isoformat()],
-        ["generated_by", ctx.generated_by_label],
-        ["organization_legal_name", branding.legal_name],
-        ["organization_tax_id", branding.tax_id],
-        ["organization_tax_id_label", branding.tax_id_label],
-        ["currency_style", branding.currency_style],
-        ["date_format", branding.date_format],
-        ["branding_settings_version", branding.settings_version],
-        ["branding_logo_sha256", branding.logo_sha256],
-        ["items_count", len(ctx.valuation.get("items") or [])],
-        ["sessions_count", len(ctx.sessions)],
-        ["events_count", len(ctx.events)],
-        ["audit_events_count", len(ctx.audit_events)],
-        ["warnings", ", ".join(ctx.warnings)],
-    ]
-    for key, value in extra.items():
-        rows.append([key, value])
-    return rows
-
-
 def render(ctx: InventoryDocContext, *, extra_metadata: dict[str, Any]) -> bytes:
     """Renderiza el workbook de auditoria con las 10 hojas requeridas."""
     workbook = Workbook()
     workbook.remove(workbook.active)
-    items = list(ctx.valuation.get("items") or [])
-
-    write_sheet(workbook, "Resumen", ["Campo", "Valor"], _summary_rows(ctx))
-    write_sheet(
-        workbook,
-        "Valorizacion",
-        [
-            "Referencia",
-            "Producto",
-            "Esperado",
-            "Fisico aprobado",
-            "Faltante",
-            "Excedente",
-            "Danadas",
-            "Costo unitario efectivo",
-            "Moneda",
-            "Valor faltante",
-            "Valor dano",
-            "Valor excedente",
-            "Valor venta afectada",
-        ],
-        _valuation_rows(items),
-    )
-    write_sheet(
-        workbook,
-        "Diferencias",
-        [
-            "Referencia",
-            "Producto",
-            "Esperado",
-            "Fisico aprobado",
-            "Faltante",
-            "Excedente",
-            "Valor faltante",
-            "Valor excedente",
-            "Moneda",
-        ],
-        _difference_rows(items),
-    )
-    write_sheet(
-        workbook,
-        "Dannos",
-        ["Referencia", "Producto", "Danadas", "Costo unitario", "Valor dano", "Moneda"],
-        [
-            [
-                *_product_columns(item),
-                item.get("damaged_quantity"),
-                item.get("effective_unit_cost"),
-                item.get("damage_cost_value"),
-                item.get("currency"),
-            ]
-            for item in items
-            if (to_decimal(item.get("damaged_quantity")) or 0) > 0
-        ],
-    )
-    write_sheet(
-        workbook,
-        "Excedentes",
-        ["Referencia", "Producto", "Excedente", "Valor excedente", "Moneda"],
-        [
-            [
-                *_product_columns(item),
-                item.get("surplus_quantity"),
-                item.get("surplus_cost_value"),
-                item.get("currency"),
-            ]
-            for item in items
-            if (to_decimal(item.get("surplus_quantity")) or 0) > 0
-        ],
-    )
+    write_sheet(workbook, "Resumen", ["Campo", "Valor"], _summary_rows(ctx, extra_metadata))
     write_sheet(
         workbook,
         "Conciliacion",
@@ -304,20 +272,18 @@ def render(ctx: InventoryDocContext, *, extra_metadata: dict[str, Any]) -> bytes
     write_sheet(
         workbook,
         "Sesiones",
-        [
-            "Numero",
-            "Tipo",
-            "Estado",
-            "Inicio",
-            "Envio",
-            "Dispositivo",
-            "Responsable",
-        ],
+        ["Numero", "Tipo", "Estado", "Inicio", "Envio", "Dispositivo", "Responsable"],
         _session_rows(ctx.sessions),
     )
     write_sheet(
         workbook,
-        "Eventos_Conteo",
+        "Conteos",
+        ["Sesion", "Referencia", "Producto", "Cantidad fisica", "Danadas", "Actualizado"],
+        _count_rows(ctx.counts),
+    )
+    write_sheet(
+        workbook,
+        "Eventos",
         [
             "Sesion",
             "Secuencia",
@@ -332,14 +298,63 @@ def render(ctx: InventoryDocContext, *, extra_metadata: dict[str, Any]) -> bytes
     )
     write_sheet(
         workbook,
-        "Rastreo",
-        ["Accion", "Actor", "Entidad", "Entidad ID", "Momento", "Detalle"],
-        _audit_rows(ctx.audit_events),
+        "Danos",
+        [
+            "Sesion",
+            "Referencia",
+            "Codigo",
+            "Accion",
+            "Cantidad",
+            "Motivo",
+            "Observacion",
+            "Evento ID",
+            "Registrado por",
+            "Creado",
+            "Tiene evidencia",
+        ],
+        _damage_rows(ctx.damages),
     )
     write_sheet(
         workbook,
-        "Metadatos",
-        ["Campo", "Valor"],
-        _metadata_rows(ctx, extra_metadata),
+        "Extras",
+        ["Sesion", "Referencia", "Producto", "Cantidad", "Detectado"],
+        _extra_rows(ctx.extras),
+    )
+    write_sheet(
+        workbook,
+        "Unknowns",
+        [
+            "Sesion",
+            "Codigo",
+            "Cantidad",
+            "Danadas",
+            "Producto resuelto",
+            "Resuelto por",
+            "Resuelto",
+        ],
+        _unknown_rows(ctx.unknowns),
+    )
+    write_sheet(
+        workbook,
+        "Reconteos",
+        [
+            "Estado",
+            "Solicitado por",
+            "Asignado a",
+            "Sesion origen",
+            "Sesion resultado",
+            "Motivo",
+            "Inicio",
+            "Completado",
+            "Cancelado",
+            "Motivo cancelacion",
+        ],
+        _recount_rows(ctx.recounts),
+    )
+    write_sheet(
+        workbook,
+        "Auditoria",
+        ["Accion", "Actor", "Entidad", "Entidad ID", "Momento", "Detalle"],
+        _audit_rows(ctx.audit_events),
     )
     return to_bytes(workbook)

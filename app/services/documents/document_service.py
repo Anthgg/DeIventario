@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from app.core.config import get_settings
 from app.documents.engine import storage as document_storage
@@ -34,8 +34,13 @@ from app.models import (
     InventoryCampaign,
     InventoryCountEvent,
     InventoryCountSession,
+    InventoryCountTotal,
+    InventoryDamage,
+    InventoryExtraItem,
     InventoryReconciliation,
+    InventoryRecount,
     InventorySnapshotItem,
+    InventoryUnknownCode,
     Product,
     User,
 )
@@ -208,8 +213,8 @@ def _session_payloads(db: Session, campaign_id: uuid.UUID) -> list[dict[str, Any
             "session_number": session.session_number,
             "session_type": session.session_type.value,
             "status": session.status.value,
-            "started_at": _iso(session.started_at),
-            "submitted_at": _iso(session.submitted_at),
+            "started_at": session.started_at,
+            "submitted_at": session.submitted_at,
             "device_identifier": session.device_identifier,
             "user_display_name": user.display_name if user is not None else None,
         }
@@ -241,9 +246,193 @@ def _event_payloads(db: Session, campaign_id: uuid.UUID) -> list[dict[str, Any]]
             "scanned_code": event.scanned_code,
             "quantity": event.resulting_quantity,
             "damage_delta_quantity": event.damage_delta_quantity,
-            "occurred_at": _iso(event.occurred_at),
+            "occurred_at": event.occurred_at,
         }
         for event, session_number, reference in rows
+    ]
+
+
+def _count_payloads(db: Session, campaign_id: uuid.UUID) -> list[dict[str, Any]]:
+    rows = db.execute(
+        select(
+            InventoryCountSession.session_number,
+            Product.internal_reference,
+            Product.name,
+            InventoryCountTotal.quantity,
+            InventoryCountTotal.damaged_quantity,
+            InventoryCountTotal.updated_at,
+        )
+        .join(
+            InventoryCountSession,
+            InventoryCountSession.id == InventoryCountTotal.session_id,
+        )
+        .join(Product, Product.id == InventoryCountTotal.product_id)
+        .where(InventoryCountSession.inventory_campaign_id == campaign_id)
+        .order_by(InventoryCountSession.session_number, Product.internal_reference)
+    ).all()
+    return [
+        {
+            "session_number": session_number,
+            "product_reference": reference,
+            "product_name": name,
+            "quantity": quantity,
+            "damaged_quantity": damaged_quantity,
+            "updated_at": updated_at,
+        }
+        for session_number, reference, name, quantity, damaged_quantity, updated_at in rows
+    ]
+
+
+def _damage_payloads(db: Session, campaign_id: uuid.UUID) -> list[dict[str, Any]]:
+    creator = aliased(User)
+    rows = db.execute(
+        select(
+            InventoryDamage,
+            InventoryCountSession.session_number,
+            Product.internal_reference,
+            creator.display_name,
+        )
+        .join(
+            InventoryCountSession,
+            InventoryCountSession.id == InventoryDamage.session_id,
+        )
+        .join(Product, Product.id == InventoryDamage.product_id, isouter=True)
+        .join(creator, creator.id == InventoryDamage.created_by, isouter=True)
+        .where(InventoryCountSession.inventory_campaign_id == campaign_id)
+        .order_by(InventoryCountSession.session_number, InventoryDamage.created_at)
+    ).all()
+    return [
+        {
+            "session_number": session_number,
+            "product_reference": reference,
+            "scanned_code": damage.scanned_code,
+            "action": damage.action.value,
+            "quantity": damage.quantity,
+            "reason": damage.reason,
+            "observation": damage.observation,
+            "event_id": str(damage.event_id) if damage.event_id else None,
+            "created_by": creator_name,
+            "created_at": damage.created_at,
+            "has_evidence": damage.evidence_path is not None,
+        }
+        for damage, session_number, reference, creator_name in rows
+    ]
+
+
+def _extra_payloads(db: Session, campaign_id: uuid.UUID) -> list[dict[str, Any]]:
+    rows = db.execute(
+        select(
+            InventoryCountSession.session_number,
+            Product.internal_reference,
+            Product.name,
+            InventoryExtraItem.quantity,
+            InventoryExtraItem.first_detected_at,
+        )
+        .join(
+            InventoryCountSession,
+            InventoryCountSession.id == InventoryExtraItem.session_id,
+        )
+        .join(Product, Product.id == InventoryExtraItem.product_id)
+        .where(InventoryCountSession.inventory_campaign_id == campaign_id)
+        .order_by(InventoryCountSession.session_number, Product.internal_reference)
+    ).all()
+    return [
+        {
+            "session_number": session_number,
+            "product_reference": reference,
+            "product_name": name,
+            "quantity": quantity,
+            "first_detected_at": first_detected_at,
+        }
+        for session_number, reference, name, quantity, first_detected_at in rows
+    ]
+
+
+def _unknown_payloads(db: Session, campaign_id: uuid.UUID) -> list[dict[str, Any]]:
+    resolver = aliased(User)
+    rows = db.execute(
+        select(
+            InventoryCountSession.session_number,
+            InventoryUnknownCode.scanned_code,
+            InventoryUnknownCode.quantity,
+            InventoryUnknownCode.damaged_quantity,
+            Product.internal_reference,
+            resolver.display_name,
+            InventoryUnknownCode.resolved_at,
+        )
+        .join(
+            InventoryCountSession,
+            InventoryCountSession.id == InventoryUnknownCode.session_id,
+        )
+        .join(Product, Product.id == InventoryUnknownCode.resolved_product_id, isouter=True)
+        .join(resolver, resolver.id == InventoryUnknownCode.resolved_by, isouter=True)
+        .where(InventoryCountSession.inventory_campaign_id == campaign_id)
+        .order_by(InventoryCountSession.session_number, InventoryUnknownCode.scanned_code)
+    ).all()
+    return [
+        {
+            "session_number": session_number,
+            "scanned_code": scanned_code,
+            "quantity": quantity,
+            "damaged_quantity": damaged_quantity,
+            "resolved_product_reference": reference,
+            "resolved_by": resolver_name,
+            "resolved_at": resolved_at,
+        }
+        for (
+            session_number,
+            scanned_code,
+            quantity,
+            damaged_quantity,
+            reference,
+            resolver_name,
+            resolved_at,
+        ) in rows
+    ]
+
+
+def _recount_payloads(db: Session, campaign_id: uuid.UUID) -> list[dict[str, Any]]:
+    requester = aliased(User)
+    assignee = aliased(User)
+    source_session = aliased(InventoryCountSession)
+    result_session = aliased(InventoryCountSession)
+    rows = db.execute(
+        select(
+            InventoryRecount,
+            requester.display_name,
+            assignee.display_name,
+            source_session.session_number,
+            result_session.session_number,
+        )
+        .join(requester, requester.id == InventoryRecount.requested_by, isouter=True)
+        .join(assignee, assignee.id == InventoryRecount.assigned_user_id, isouter=True)
+        .join(
+            source_session,
+            source_session.id == InventoryRecount.source_session_id,
+            isouter=True,
+        )
+        .join(
+            result_session,
+            result_session.id == InventoryRecount.resulting_session_id,
+            isouter=True,
+        )
+        .where(InventoryRecount.inventory_campaign_id == campaign_id)
+        .order_by(InventoryRecount.created_at, InventoryRecount.id)
+    ).all()
+    return [
+        {
+            "status": recount.status.value,
+            "requested_by": requested_by,
+            "assigned_to": assigned_to,
+            "source_session_number": source_number,
+            "resulting_session_number": result_number,
+            "reason": recount.reason,
+            "started_at": recount.started_at,
+            "completed_at": recount.completed_at,
+            "cancelled_at": recount.cancelled_at,
+            "cancel_reason": recount.cancel_reason,
+        }
+        for recount, requested_by, assigned_to, source_number, result_number in rows
     ]
 
 
@@ -266,7 +455,7 @@ def _audit_payloads(db: Session, campaign_id: uuid.UUID) -> list[dict[str, Any]]
             "actor": user.display_name if user is not None else None,
             "entity_type": event.entity_type,
             "entity_id": str(event.entity_id) if event.entity_id else None,
-            "occurred_at": _iso(event.occurred_at),
+            "occurred_at": event.occurred_at,
             "metadata": canonical_json(event.metadata_) if event.metadata_ else None,
         }
         for event, user in rows
@@ -490,7 +679,12 @@ def generate_document(
 
     reconciliation_rows: list[dict[str, Any]] = []
     sessions: list[dict[str, Any]] = []
+    counts: list[dict[str, Any]] = []
     events: list[dict[str, Any]] = []
+    damages: list[dict[str, Any]] = []
+    extras: list[dict[str, Any]] = []
+    unknowns: list[dict[str, Any]] = []
+    recounts: list[dict[str, Any]] = []
     audit_events: list[dict[str, Any]] = []
     if document_type in ("audit-export", "erp-adjustment"):
         reconciliation_rows = _reconciliation_payloads(db, campaign_id)
@@ -498,6 +692,12 @@ def generate_document(
         sessions = _session_payloads(db, campaign_id)
         events = _event_payloads(db, campaign_id)
         audit_events = _audit_payloads(db, campaign_id)
+    if document_type == "audit-export":
+        counts = _count_payloads(db, campaign_id)
+        damages = _damage_payloads(db, campaign_id)
+        extras = _extra_payloads(db, campaign_id)
+        unknowns = _unknown_payloads(db, campaign_id)
+        recounts = _recount_payloads(db, campaign_id)
 
     document_number = _allocate_document_number(db)
     generated_at = _now()
@@ -511,7 +711,12 @@ def generate_document(
         generated_at=generated_at,
         generated_by_label=actor_label,
         sessions=sessions,
+        counts=counts,
         events=events,
+        damages=damages,
+        extras=extras,
+        unknowns=unknowns,
+        recounts=recounts,
         audit_events=audit_events,
         reconciliation_rows=reconciliation_rows,
         profile=export_profile_service.profile_payload(profile) if profile else None,
@@ -525,6 +730,15 @@ def generate_document(
             "template_version": TEMPLATE_VERSION,
             "module_version": MODULE_VERSION,
         }
+        if document_type == "audit-export":
+            render_kwargs["extra_metadata"].update(
+                {
+                    "snapshot_sha256": campaign.snapshot_sha256,
+                    "reconciliation_source_sha256": campaign.reconciliation_source_sha256,
+                    "valuation_source_sha256": campaign.valuation_source_sha256,
+                    "branding_sha256": source_branding_sha,
+                }
+            )
     if profile is not None:
         render_kwargs["profile"] = export_profile_service.profile_payload(profile)
 

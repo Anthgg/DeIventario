@@ -191,6 +191,30 @@ def test_start_is_idempotent() -> None:
     cleanup_inventory_test_data()
 
 
+def test_start_is_idempotent_when_frozen_snapshot_is_empty() -> None:
+    cleanup_inventory_test_data()
+    campaign, _operator, _batch = _startable_campaign(quantities=(("ZERO", "0"),))
+    as_user(PERMS_CREATE, roles=("MANAGER",))
+    first = client.post(
+        f"/api/v1/inventory/campaigns/{campaign['id']}/start", json={"expected_version": 2}
+    )
+    assert first.status_code == 200, first.text
+    assert first.json()["already_started"] is False
+    assert _snapshot_item_count(str(campaign["id"])) == 0
+    with SessionLocal() as db:
+        first_version = db.get(InventoryCampaign, uuid.UUID(str(campaign["id"]))).version
+
+    second = client.post(
+        f"/api/v1/inventory/campaigns/{campaign['id']}/start", json={"expected_version": 2}
+    )
+    assert second.status_code == 200, second.text
+    assert second.json()["already_started"] is True
+    with SessionLocal() as db:
+        second_version = db.get(InventoryCampaign, uuid.UUID(str(campaign["id"]))).version
+    assert second_version == first_version
+    cleanup_inventory_test_data()
+
+
 def test_snapshot_hash_is_deterministic() -> None:
     cleanup_inventory_test_data()
     as_user(PERMS_CREATE, roles=("MANAGER",))

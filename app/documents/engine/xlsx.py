@@ -20,8 +20,15 @@ def coerce(value: Any) -> Any:
         return None
     if isinstance(value, decimal.Decimal):
         return float(value)
-    if isinstance(value, (dt.datetime, dt.date)):
-        return value.isoformat()
+    if isinstance(value, dt.datetime):
+        # Excel has no timezone-aware date type; persist a real UTC date cell.
+        return (
+            value.astimezone(dt.UTC).replace(tzinfo=None)
+            if value.tzinfo is not None
+            else value
+        )
+    if isinstance(value, dt.date):
+        return value
     if isinstance(value, (str, int, float, bool)):
         return value
     return str(value)

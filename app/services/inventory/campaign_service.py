@@ -265,7 +265,6 @@ def start_campaign(
     if (
         campaign.status is CampaignStatus.IN_PROGRESS
         and campaign.snapshot_frozen_at is not None
-        and snapshot_service.snapshot_item_count(db, campaign.id) > 0
     ):
         db.commit()
         return campaign, True

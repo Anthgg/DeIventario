@@ -3,10 +3,18 @@
 from __future__ import annotations
 
 import uuid
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+from types import SimpleNamespace
 
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from sqlalchemy import func, select
 
+from app.api import admin as admin_api
+from app.db.session import SessionLocal
 from app.main import app
+from app.models import Role, User, UserRole
 from tests.auth_helpers import cleanup_auth_test_data, create_test_user, override_auth
 
 client = TestClient(app)
@@ -116,3 +124,56 @@ def test_last_admin_is_protected() -> None:
         f"/api/v1/admin/users/{first}/active", json={"is_active": False}
     ).status_code == 200
     cleanup_auth_test_data()
+
+
+def test_concurrent_last_admin_removals_leave_one_admin_active() -> None:
+    cleanup_auth_test_data()
+    first = create_test_user(email=f"test-auth-race1-{uuid.uuid4()}@example.invalid")
+    second = create_test_user(email=f"test-auth-race2-{uuid.uuid4()}@example.invalid")
+    actor_id = _as_admin()
+    assert client.post(f"/api/v1/admin/users/{first}/roles/ADMIN").status_code == 200
+    assert client.post(f"/api/v1/admin/users/{second}/roles/ADMIN").status_code == 200
+    barrier = Barrier(2)
+
+    def run(operation: str, target_id: uuid.UUID) -> int:
+        with SessionLocal() as db:
+            barrier.wait(timeout=10)
+            try:
+                if operation == "deactivate":
+                    admin_api.set_active(
+                        target_id,
+                        admin_api.ActiveUpdate(is_active=False),
+                        SimpleNamespace(id=actor_id),
+                        db,
+                    )
+                else:
+                    admin_api.revoke_role(
+                        target_id,
+                        "ADMIN",
+                        SimpleNamespace(id=actor_id),
+                        db,
+                    )
+                return 200
+            except HTTPException as exc:
+                db.rollback()
+                return exc.status_code
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = [
+                pool.submit(run, "deactivate", first),
+                pool.submit(run, "revoke", second),
+            ]
+            statuses = sorted(future.result() for future in results)
+        assert statuses == [200, 409]
+        with SessionLocal() as db:
+            active_admins = db.execute(
+                select(func.count())
+                .select_from(UserRole)
+                .join(User, User.id == UserRole.user_id)
+                .join(Role, Role.id == UserRole.role_id)
+                .where(Role.code == "ADMIN", User.is_active.is_(True))
+            ).scalar_one()
+        assert active_admins == 1
+    finally:
+        cleanup_auth_test_data()

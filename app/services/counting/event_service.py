@@ -486,14 +486,14 @@ def process_event(
     if payload.event_type not in SUPPORTED_TYPES:
         raise CountError("event_type no soportado en esta fase", 422, "EVENT_TYPE_NOT_SUPPORTED")
     incoming = _incoming_signature(payload)
+    session = session_service.lock_session(db, session_id)
+    _assert_actor_owns(db, session, actor_id)
     existing = _find_by_uuid(db, payload.client_event_uuid)
     if existing is not None:
         return _idempotent_result(existing, session_id, incoming)
 
-    session = session_service.lock_session(db, session_id)
     _assert_open(session)
     session_service.assert_campaign_active(db, session)
-    _assert_actor_owns(db, session, actor_id)
 
     target = _resolve_target(db, session, payload)
 
@@ -518,18 +518,18 @@ def process_event(
 
 
 def _finish(
-    db: Session, event: InventoryCountEvent, client_uuid: uuid.UUID, commit: bool
+    db: Session, event: InventoryCountEvent, signature: list[str], commit: bool
 ) -> EventResult:
-    if not commit:
-        db.flush()
-        return EventResult(event, False)
     try:
-        db.commit()
+        if commit:
+            db.commit()
+        else:
+            db.flush()
     except IntegrityError as exc:
         db.rollback()
-        winner = _find_by_uuid(db, client_uuid)
+        winner = _find_by_uuid(db, event.client_event_uuid)
         if winner is not None:
-            return EventResult(winner, True)
+            return _idempotent_result(winner, event.session_id, signature)
         raise CountError("Conflicto al procesar el evento", 409, "EVENT_CONFLICT") from exc
     return EventResult(event, False)
 
@@ -570,7 +570,7 @@ def _process_product_physical(
     total.updated_at = _now()
     session.last_activity_at = _now()
     _sync_extra(db, session, product_id, new_quantity)
-    return _finish(db, event, payload.client_event_uuid, commit)
+    return _finish(db, event, signature, commit)
 
 
 def _process_unknown_physical(
@@ -606,7 +606,7 @@ def _process_unknown_physical(
     )
     unknown.quantity = new_quantity
     session.last_activity_at = _now()
-    return _finish(db, event, payload.client_event_uuid, commit)
+    return _finish(db, event, signature, commit)
 
 
 def _process_damage_event(
@@ -681,7 +681,7 @@ def _process_damage_event(
         scanned_code=scanned_code if target.is_unknown else None,
     )
     session.last_activity_at = _now()
-    return _finish(db, event, payload.client_event_uuid, commit)
+    return _finish(db, event, signature, commit)
 
 
 def process_batch(

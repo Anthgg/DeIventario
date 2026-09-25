@@ -40,6 +40,13 @@ def get_role_by_code(db: Session, code: str) -> Role | None:
     return db.execute(select(Role).where(Role.code == code)).scalar_one_or_none()
 
 
+def lock_admin_role(db: Session) -> None:
+    """Serialize operations that can remove an active ADMIN capability."""
+    db.execute(
+        select(Role.id).where(Role.code == ADMIN_ROLE_CODE).with_for_update()
+    ).scalar_one_or_none()
+
+
 def _count_active_admins(db: Session, exclude_user_id: uuid.UUID | None = None) -> int:
     query = (
         select(func.count())

@@ -57,10 +57,12 @@ def set_active(
     user_id: uuid.UUID, payload: ActiveUpdate, current: RequireUsersManage, db: Database
 ) -> dict[str, Any]:
     user = _get_user_or_404(db, user_id)
-    if user.is_active and not payload.is_active and rbac_service.is_last_active_admin(db, user_id):
-        raise HTTPException(
-            status_code=409, detail="No se puede desactivar al ultimo ADMIN activo"
-        )
+    if user.is_active and not payload.is_active:
+        rbac_service.lock_admin_role(db)
+        if rbac_service.is_last_active_admin(db, user_id):
+            raise HTTPException(
+                status_code=409, detail="No se puede desactivar al ultimo ADMIN activo"
+            )
     if user.is_active != payload.is_active:
         user.is_active = payload.is_active
         action = (
@@ -102,10 +104,12 @@ def revoke_role(
     user_id: uuid.UUID, role_code: str, current: RequireUsersManageRoles, db: Database
 ) -> dict[str, Any]:
     user = _get_user_or_404(db, user_id)
-    if role_code == rbac_service.ADMIN_ROLE_CODE and rbac_service.is_last_active_admin(db, user_id):
-        raise HTTPException(
-            status_code=409, detail="No se puede quitar ADMIN al ultimo ADMIN activo"
-        )
+    if role_code == rbac_service.ADMIN_ROLE_CODE:
+        rbac_service.lock_admin_role(db)
+        if rbac_service.is_last_active_admin(db, user_id):
+            raise HTTPException(
+                status_code=409, detail="No se puede quitar ADMIN al ultimo ADMIN activo"
+            )
     if rbac_service.revoke_role(db, user_id, role_code):
         audit_service.record(
             db,

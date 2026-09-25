@@ -7,6 +7,8 @@ hardcodeada: todo sale de ``organization_settings``.
 
 from __future__ import annotations
 
+import datetime as dt
+import decimal
 import io
 import uuid
 from collections.abc import Iterator
@@ -28,9 +30,14 @@ from app.models import (
     DocumentExport,
     ExportProfile,
     InventoryCampaign,
+    InventoryDamage,
+    InventoryExtraItem,
+    InventoryRecount,
+    InventoryUnknownCode,
     OrganizationSettings,
+    Product,
 )
-from app.models.enums import DocumentStatus
+from app.models.enums import DamageAction, DocumentStatus, RecountStatus
 from tests.auth_helpers import override_auth
 from tests.inventory_helpers import (
     PERMS_CLOSE,
@@ -42,6 +49,7 @@ from tests.inventory_helpers import (
     as_user,
     cleanup_inventory_test_data,
     client,
+    create_standalone_product,
 )
 from tests.test_count_engine import _ready_to_count
 from tests.test_reconciliation import _audit_count, _campaign
@@ -413,6 +421,52 @@ def test_audit_export_builds_all_sheets_from_persisted_data() -> None:
     as_user(_DOCS_ID)
     _configure_identity()
 
+    extra_reference = f"TEST-AUDIT-EXTRA-{uuid.uuid4().hex[:6]}"
+    extra_product_id = create_standalone_product(extra_reference)
+    generated_at = dt.datetime.now(dt.UTC)
+    with SessionLocal() as db:
+        count_reference = db.get(Product, ctx["products"]["A"]).internal_reference
+        db.add(
+            InventoryDamage(
+                session_id=uuid.UUID(ctx["session_id"]),
+                product_id=ctx["products"]["A"],
+                quantity=decimal.Decimal("1"),
+                action=DamageAction.ADD,
+                reason="Test damage audit",
+                observation="Audit detail",
+                created_by=ctx["operator_id"],
+            )
+        )
+        db.add(
+            InventoryExtraItem(
+                session_id=uuid.UUID(ctx["session_id"]),
+                product_id=extra_product_id,
+                quantity=decimal.Decimal("2"),
+                first_detected_at=generated_at,
+            )
+        )
+        db.add(
+            InventoryUnknownCode(
+                session_id=uuid.UUID(ctx["session_id"]),
+                scanned_code="TEST-AUDIT-UNKNOWN",
+                quantity=decimal.Decimal("1"),
+                damaged_quantity=decimal.Decimal("0"),
+            )
+        )
+        db.add(
+            InventoryRecount(
+                inventory_campaign_id=uuid.UUID(ctx["campaign_id"]),
+                requested_by=ctx["operator_id"],
+                assigned_user_id=ctx["operator_id"],
+                source_session_id=uuid.UUID(ctx["session_id"]),
+                status=RecountStatus.CANCELLED,
+                reason="Test recount audit",
+                cancelled_at=generated_at,
+                cancel_reason="No longer needed",
+            )
+        )
+        db.commit()
+
     status, body = _generate(ctx["campaign_id"], "audit-export")
     assert status == 200, body
     assert body["format"] == "XLSX"
@@ -422,25 +476,43 @@ def test_audit_export_builds_all_sheets_from_persisted_data() -> None:
     workbook = _workbook(download.content)
     assert workbook.sheetnames == list(SHEET_NAMES)
     metadata = {
-        row[0]: row[1] for row in _cells(workbook["Metadatos"]) if row and row[0]
+        row[0]: row[1] for row in _cells(workbook["Resumen"]) if row and row[0]
     }
     assert metadata["document_number"] == body["document_number"]
     assert metadata["source_sha256"] == body["source_sha256"]
     assert metadata["template_version"] == body["template_version"]
-    valuation_sheet = _cells(workbook["Valorizacion"])
-    assert valuation_sheet
-    assert valuation_sheet[0][:9] == [
+    assert any(row and row[5] == "Test damage audit" for row in _cells(workbook["Danos"]))
+    assert any(
+        row and row[1] == "TEST-AUDIT-UNKNOWN" for row in _cells(workbook["Unknowns"])
+    )
+    assert any(row and row[5] == "Test recount audit" for row in _cells(workbook["Reconteos"]))
+    assert any(
+        row and row[1] == count_reference for row in _cells(workbook["Conteos"])
+    )
+    assert any(
+        row and row[1] == extra_reference for row in _cells(workbook["Extras"])
+    )
+    reconciliation_sheet = _cells(workbook["Conciliacion"])
+    assert reconciliation_sheet
+    assert reconciliation_sheet[0] == [
         "Referencia",
         "Producto",
         "Esperado",
         "Fisico aprobado",
-        "Faltante",
-        "Excedente",
+        "Diferencia",
         "Danadas",
-        "Costo unitario efectivo",
-        "Moneda",
+        "Faltantes",
+        "Excedentes",
+        "Estado",
+        "Motivo",
+        "Observacion",
+        "Costo unitario",
+        "Valor faltante",
+        "Valor dano",
+        "Valor excedente",
+        "Valor venta afectada",
     ]
-    data_rows = [row for row in valuation_sheet[1:] if row and row[0]]
+    data_rows = [row for row in reconciliation_sheet[1:] if row and row[0]]
     # El dinero de la hoja sale de F009, sin recalculo del renderer.
     status, valuation = _vread(ctx["campaign_id"])
     assert status == 200, valuation
@@ -448,10 +520,10 @@ def test_audit_export_builds_all_sheets_from_persisted_data() -> None:
     for item in valuation["items"]:
         reference = item["product"]["internal_reference"]
         row = next(r for r in data_rows if r[0] == reference)
-        assert float(row[7]) == float(item["effective_unit_cost"])
-        assert float(row[9]) == float(item["missing_cost_value"])
-        assert float(row[10]) == float(item["damage_cost_value"])
-        assert float(row[11]) == float(item["surplus_cost_value"])
+        assert float(row[11]) == float(item["effective_unit_cost"])
+        assert float(row[12]) == float(item["missing_cost_value"])
+        assert float(row[13]) == float(item["damage_cost_value"])
+        assert float(row[14]) == float(item["surplus_cost_value"])
 
 
 def test_erp_adjustment_uses_canonical_profile_with_vendor_warning() -> None:

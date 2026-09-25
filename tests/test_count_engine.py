@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier, Lock
 from typing import Any
 
 from sqlalchemy import func, select
@@ -369,6 +370,92 @@ def test_concurrent_qr_scans_do_not_lose_increments() -> None:
         )
     assert len(sequences) == total_concurrent
     assert len(set(sequences)) == total_concurrent
+    cleanup_inventory_test_data()
+
+
+def test_concurrent_duplicate_uuid_across_sessions_returns_conflict(
+    monkeypatch: Any,
+) -> None:
+    campaign_id, batch_id, operator_id = _ready_to_count()
+    as_user(PERMS_CREATE, roles=("MANAGER",))
+    second_campaign_response = client.post(
+        "/api/v1/inventory/campaigns",
+        json={
+            "name": f"test-count-race-{uuid.uuid4().hex[:8]}",
+            "source_import_batch_id": batch_id,
+            "deadline_at": _future(),
+        },
+    )
+    assert second_campaign_response.status_code == 200, second_campaign_response.text
+    second_campaign_id = second_campaign_response.json()["id"]
+    as_user(PERMS_ASSIGN, roles=("MANAGER",))
+    assigned = client.post(
+        f"/api/v1/inventory/campaigns/{second_campaign_id}/assign",
+        json={"user_id": str(operator_id), "expected_version": 1},
+    )
+    assert assigned.status_code == 200, assigned.text
+    as_user(PERMS_CREATE, roles=("MANAGER",))
+    started = client.post(
+        f"/api/v1/inventory/campaigns/{second_campaign_id}/start",
+        json={"expected_version": 2},
+    )
+    assert started.status_code == 200, started.text
+
+    _as_operator(operator_id)
+    session_ids = [
+        uuid.UUID(str(_start_session(campaign_id)["id"])),
+        uuid.UUID(str(_start_session(second_campaign_id)["id"])),
+    ]
+    product_id, _reference = batch_products(batch_id)[0]
+    shared_uuid = uuid.uuid4()
+    lookup_barrier = Barrier(2)
+    lookup_lock = Lock()
+    lookup_count = 0
+    original_find = event_service._find_by_uuid
+
+    def synchronized_find(db: Any, client_event_uuid: uuid.UUID) -> Any:
+        nonlocal lookup_count
+        event = original_find(db, client_event_uuid)
+        with lookup_lock:
+            lookup_count += 1
+            should_wait = lookup_count <= 2
+        if should_wait:
+            lookup_barrier.wait(timeout=10)
+        return event
+
+    monkeypatch.setattr(event_service, "_find_by_uuid", synchronized_find)
+
+    def worker(session_id: uuid.UUID) -> int:
+        with SessionLocal() as db:
+            try:
+                event_service.process_event(
+                    db,
+                    session_id=session_id,
+                    actor_id=operator_id,
+                    payload=event_service.EventInput(
+                        client_event_uuid=shared_uuid,
+                        event_type=CountEventType.QR_SCAN,
+                        product_id=product_id,
+                        source=EventSource.CAMERA,
+                    ),
+                )
+                return 200
+            except event_service.CountError as exc:
+                db.rollback()
+                return exc.status_code
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        statuses = sorted(pool.map(worker, session_ids))
+    assert statuses == [200, 409]
+    with SessionLocal() as db:
+        persisted = list(
+            db.execute(
+                select(InventoryCountEvent).where(
+                    InventoryCountEvent.client_event_uuid == shared_uuid
+                )
+            ).scalars()
+        )
+    assert len(persisted) == 1
     cleanup_inventory_test_data()
 
 

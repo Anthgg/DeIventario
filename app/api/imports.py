@@ -33,10 +33,10 @@ def _read_xlsx(file: UploadFile) -> bytes:
     filename = file.filename or ""
     if not filename.lower().endswith(".xlsx"):
         raise HTTPException(status_code=415, detail="Solo se aceptan archivos .xlsx.")
-    data = file.file.read()
+    max_bytes = get_settings().MAX_UPLOAD_MB * 1024 * 1024
+    data = file.file.read(max_bytes + 1)
     if not data:
         raise HTTPException(status_code=400, detail="El archivo esta vacio.")
-    max_bytes = get_settings().MAX_UPLOAD_MB * 1024 * 1024
     if len(data) > max_bytes:
         limit = get_settings().MAX_UPLOAD_MB
         raise HTTPException(status_code=413, detail=f"El archivo supera {limit} MB.")

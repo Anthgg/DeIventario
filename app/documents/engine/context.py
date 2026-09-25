@@ -22,7 +22,12 @@ class InventoryDocContext:
     generated_at: dt.datetime
     generated_by_label: str | None = None
     sessions: list[dict[str, Any]] = field(default_factory=list)
+    counts: list[dict[str, Any]] = field(default_factory=list)
     events: list[dict[str, Any]] = field(default_factory=list)
+    damages: list[dict[str, Any]] = field(default_factory=list)
+    extras: list[dict[str, Any]] = field(default_factory=list)
+    unknowns: list[dict[str, Any]] = field(default_factory=list)
+    recounts: list[dict[str, Any]] = field(default_factory=list)
     audit_events: list[dict[str, Any]] = field(default_factory=list)
     reconciliation_rows: list[dict[str, Any]] = field(default_factory=list)
     profile: dict[str, Any] | None = None
