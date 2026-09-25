@@ -7,6 +7,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import openpyxl
+from openpyxl.worksheet.worksheet import Worksheet
 
 from app.importers.base import InvalidFileError
 
@@ -23,12 +24,12 @@ def load_workbook(source: Source) -> openpyxl.Workbook:
         raise InvalidFileError(f"No se pudo leer el archivo XLSX: {exc}") from exc
 
 
-def first_sheet(workbook: openpyxl.Workbook) -> openpyxl.worksheet.worksheet.Worksheet:
+def first_sheet(workbook: openpyxl.Workbook) -> Worksheet:
     return workbook[workbook.sheetnames[0]]
 
 
 def detect_header(
-    sheet: openpyxl.worksheet.worksheet.Worksheet, min_non_empty: int = 2
+    sheet: Worksheet, min_non_empty: int = 2
 ) -> tuple[int, list[str]]:
     """Devuelve (numero de fila 1-based, encabezados) de la primera fila con datos."""
     for row_number, row in enumerate(sheet.iter_rows(values_only=True), start=1):
@@ -39,7 +40,7 @@ def detect_header(
 
 
 def iter_data_rows(
-    sheet: openpyxl.worksheet.worksheet.Worksheet, header_row: int
+    sheet: Worksheet, header_row: int
 ) -> Iterator[tuple[int, list[object]]]:
     """Itera filas de datos (despues de la cabecera) como (nro fila, valores)."""
     for row_number, row in enumerate(sheet.iter_rows(values_only=True), start=1):

@@ -35,17 +35,25 @@ def _iso(value: dt.datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
 
 
-def submitted_sessions(db: Session, campaign_id: uuid.UUID) -> list[InventoryCountSession]:
-    return list(
-        db.execute(
-            select(InventoryCountSession)
-            .where(
-                InventoryCountSession.inventory_campaign_id == campaign_id,
-                InventoryCountSession.status == SessionStatus.SUBMITTED,
-            )
-            .order_by(InventoryCountSession.session_number, InventoryCountSession.id)
-        ).scalars()
+def submitted_sessions(
+    db: Session,
+    campaign_id: uuid.UUID,
+    *,
+    limit: int | None = None,
+    offset: int = 0,
+) -> list[InventoryCountSession]:
+    query = (
+        select(InventoryCountSession)
+        .where(
+            InventoryCountSession.inventory_campaign_id == campaign_id,
+            InventoryCountSession.status == SessionStatus.SUBMITTED,
+        )
+        .order_by(InventoryCountSession.session_number, InventoryCountSession.id)
+        .offset(offset)
     )
+    if limit is not None:
+        query = query.limit(limit)
+    return list(db.execute(query).scalars())
 
 
 def source_fingerprint(db: Session, campaign_id: uuid.UUID) -> str:

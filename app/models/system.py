@@ -38,7 +38,7 @@ class OrganizationSettings(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __table_args__ = (
         sa.CheckConstraint(
             "next_document_number >= 1",
-            name="ck_organization_settings_next_document_number_positive",
+            name="next_document_number_positive",
         ),
     )
 
@@ -107,7 +107,7 @@ class DocumentExport(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
             "entity_type",
             "entity_id",
         ),
-        sa.CheckConstraint("file_size >= 0", name="ck_document_exports_filesize_nonnegative"),
+        sa.CheckConstraint("file_size >= 0", name="filesize_nonnegative"),
     )
 
     module: Mapped[DocumentModule] = mapped_column(varchar_enum(DocumentModule), nullable=False)

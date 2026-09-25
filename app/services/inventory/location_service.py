@@ -24,11 +24,17 @@ def get_location(db: Session, location_id: uuid.UUID) -> Location:
     return location
 
 
-def list_locations(db: Session, *, active: bool | None = None) -> list[Location]:
-    query = select(Location).order_by(Location.name)
+def list_locations(
+    db: Session,
+    *,
+    active: bool | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[Location]:
+    query = select(Location).order_by(Location.name, Location.id)
     if active is not None:
         query = query.where(Location.active.is_(active))
-    return list(db.execute(query).scalars())
+    return list(db.execute(query.offset(offset).limit(limit)).scalars())
 
 
 def _assert_code_available(db: Session, code: str | None, exclude_id: uuid.UUID | None) -> None:

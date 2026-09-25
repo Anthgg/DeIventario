@@ -415,8 +415,8 @@ def _insert_event(
     damage_delta: decimal.Decimal | None = None,
     previous_damaged: decimal.Decimal | None = None,
     resulting_damaged: decimal.Decimal | None = None,
-) -> InventoryCountEvent:
-    session.last_sequence = session.last_sequence + 1
+) -> InventoryCountEvent | EventResult:
+    next_sequence = session.last_sequence + 1
     default_source = EventSource.CAMERA if payload.event_type in _QR_TYPES else EventSource.MANUAL
     event = InventoryCountEvent(
         session_id=session.id,
@@ -436,11 +436,19 @@ def _insert_event(
         client_event_uuid=payload.client_event_uuid,
         occurred_at=payload.occurred_at or _now(),
         received_at=_now(),
-        server_sequence=session.last_sequence,
+        server_sequence=next_sequence,
         metadata_={"sig": signature},
     )
     db.add(event)
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError as exc:
+        db.rollback()
+        winner = _find_by_uuid(db, payload.client_event_uuid)
+        if winner is not None:
+            return _idempotent_result(winner, session.id, signature)
+        raise CountError("Conflicto al procesar el evento", 409, "EVENT_CONFLICT") from exc
+    session.last_sequence = next_sequence
     return event
 
 
@@ -486,6 +494,7 @@ def process_event(
     if payload.event_type not in SUPPORTED_TYPES:
         raise CountError("event_type no soportado en esta fase", 422, "EVENT_TYPE_NOT_SUPPORTED")
     incoming = _incoming_signature(payload)
+    campaign = session_service.lock_campaign_for_session(db, session_id)
     session = session_service.lock_session(db, session_id)
     _assert_actor_owns(db, session, actor_id)
     existing = _find_by_uuid(db, payload.client_event_uuid)
@@ -493,7 +502,7 @@ def process_event(
         return _idempotent_result(existing, session_id, incoming)
 
     _assert_open(session)
-    session_service.assert_campaign_active(db, session)
+    session_service.assert_campaign_active(db, session, campaign=campaign)
 
     target = _resolve_target(db, session, payload)
 
@@ -555,7 +564,7 @@ def _process_product_physical(
             409,
             "DAMAGED_EXCEEDS_RESULTING_PHYSICAL_QUANTITY",
         )
-    event = _insert_event(
+    inserted = _insert_event(
         db,
         session,
         payload,
@@ -566,6 +575,9 @@ def _process_product_physical(
         delta=delta,
         signature=signature,
     )
+    if isinstance(inserted, EventResult):
+        return inserted
+    event = inserted
     total.quantity = new_quantity
     total.updated_at = _now()
     session.last_activity_at = _now()
@@ -593,7 +605,7 @@ def _process_unknown_physical(
             409,
             "DAMAGED_EXCEEDS_RESULTING_PHYSICAL_QUANTITY",
         )
-    event = _insert_event(
+    inserted = _insert_event(
         db,
         session,
         payload,
@@ -604,6 +616,9 @@ def _process_unknown_physical(
         delta=delta,
         signature=signature,
     )
+    if isinstance(inserted, EventResult):
+        return inserted
+    event = inserted
     unknown.quantity = new_quantity
     session.last_activity_at = _now()
     return _finish(db, event, signature, commit)
@@ -651,7 +666,7 @@ def _process_damage_event(
         )
     damage_delta = new_damaged - damaged  # +quantity en ADD, -quantity en SUBTRACT
 
-    event = _insert_event(
+    inserted = _insert_event(
         db,
         session,
         payload,
@@ -665,6 +680,9 @@ def _process_damage_event(
         previous_damaged=damaged,
         resulting_damaged=new_damaged,
     )
+    if isinstance(inserted, EventResult):
+        return inserted
+    event = inserted
     if target.unknown is not None:
         target.unknown.damaged_quantity = new_damaged
     elif total is not None:
@@ -773,9 +791,10 @@ def undo_event(
     actor_id: uuid.UUID,
     client_event_uuid: uuid.UUID | None = None,
 ) -> EventResult:
+    campaign = session_service.lock_campaign_for_session(db, session_id)
     session = session_service.lock_session(db, session_id)
     _assert_open(session)
-    session_service.assert_campaign_active(db, session)
+    session_service.assert_campaign_active(db, session, campaign=campaign)
     _assert_actor_owns(db, session, actor_id)
 
     target = db.get(InventoryCountEvent, target_event_id)

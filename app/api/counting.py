@@ -119,10 +119,14 @@ def get_count_session(
 
 @router.get("/count-sessions/{session_id}/items")
 def get_count_items(
-    session_id: uuid.UUID, current: RequireCountOrMonitor, db: Database
+    session_id: uuid.UUID,
+    current: RequireCountOrMonitor,
+    db: Database,
+    limit: Annotated[int, Query(ge=1, le=200)] = 100,
+    offset: Annotated[int, Query(ge=0)] = 0,
 ) -> list[dict[str, Any]]:
     session = _readable_session(db, session_id, current)
-    return session_service.session_items(db, session.id)
+    return session_service.session_items(db, session.id, limit=limit, offset=offset)
 
 
 @router.get("/count-sessions/{session_id}/events")
@@ -237,6 +241,12 @@ def post_submit(
 
 @router.get("/campaigns/{campaign_id}/count-sessions")
 def list_campaign_count_sessions(
-    campaign_id: uuid.UUID, current: RequireMonitor, db: Database
+    campaign_id: uuid.UUID,
+    current: RequireMonitor,
+    db: Database,
+    limit: Annotated[int, Query(ge=1, le=200)] = 100,
+    offset: Annotated[int, Query(ge=0)] = 0,
 ) -> list[dict[str, Any]]:
-    return session_service.list_campaign_sessions(db, campaign_id)
+    return session_service.list_campaign_sessions(
+        db, campaign_id, limit=limit, offset=offset
+    )

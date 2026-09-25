@@ -308,14 +308,14 @@ class InventoryCountTotal(UUIDPrimaryKeyMixin, Base):
     __table_args__ = (
         sa.UniqueConstraint("session_id", "product_id"),
         sa.CheckConstraint(
-            "quantity >= 0", name="ck_inventory_count_totals_quantity_non_negative"
+            "quantity >= 0", name="quantity_non_negative"
         ),
         sa.CheckConstraint(
-            "damaged_quantity >= 0", name="ck_inventory_count_totals_damaged_non_negative"
+            "damaged_quantity >= 0", name="damaged_non_negative"
         ),
         sa.CheckConstraint(
             "damaged_quantity <= quantity",
-            name="ck_inventory_count_totals_damaged_le_quantity",
+            name="damaged_le_quantity",
         ),
     )
 

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import datetime as dt
+import decimal
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 from typing import Any
 
 from sqlalchemy import func, select
@@ -19,7 +21,12 @@ from app.models import (
     InventoryCountTotal,
     InventoryRecount,
 )
-from app.models.enums import AssignmentStatus, RecountStatus, SessionStatus
+from app.models.enums import AssignmentStatus, CountEventType, RecountStatus, SessionStatus
+from app.services.counting import event_service, session_service
+from app.services.counting.errors import CountError
+from app.services.counting.event_service import EventInput
+from app.services.inventory import campaign_service
+from app.services.inventory.campaign_service import CampaignError
 from tests.auth_helpers import override_auth
 from tests.inventory_helpers import (
     PERMS_MONITOR,
@@ -841,6 +848,146 @@ def test_admin_session_history_lists_recount_sessions_blind() -> None:
     for row in history.json():
         assert "expected" not in row
         assert "difference" not in row
+
+    first = client.get(
+        f"/api/v1/inventory/campaigns/{campaign_id}/count-sessions?limit=1&offset=0"
+    )
+    second = client.get(
+        f"/api/v1/inventory/campaigns/{campaign_id}/count-sessions?limit=1&offset=1"
+    )
+    assert first.status_code == second.status_code == 200
+    assert len(first.json()) == len(second.json()) == 1
+    assert [row["id"] for row in first.json() + second.json()] == [
+        row["id"] for row in history.json()
+    ]
+    for row in first.json() + second.json():
+        assert "expected" not in row
+        assert "difference" not in row
+    cleanup_inventory_test_data()
+
+
+def test_concurrent_submit_and_reopen_follow_campaign_session_lock_order() -> None:
+    campaign_id, _batch, _operator = _submitted_campaign()
+    recount_operator = create_operator_user()
+    _as_manager()
+    _request_recount(campaign_id, recount_operator)
+    _as_operator(recount_operator)
+    session = _start_count(campaign_id)
+    session_id = uuid.UUID(str(session["id"]))
+    _force_deadline_past(campaign_id)
+
+    manager_id = _as_manager()
+    campaign = _campaign(campaign_id)
+    gate = Barrier(2)
+
+    def submit() -> str:
+        gate.wait(timeout=10)
+        with SessionLocal() as db:
+            try:
+                session_service.submit_session(
+                    db,
+                    session_id=session_id,
+                    actor_id=recount_operator,
+                    expected_version=int(session["version"]),
+                    confirm_missing=True,
+                )
+            except CountError:
+                db.rollback()
+                return "rejected"
+            return "submitted"
+
+    def reopen() -> str:
+        gate.wait(timeout=10)
+        with SessionLocal() as db:
+            try:
+                row = campaign_service.reopen_campaign(
+                    db,
+                    actor_id=manager_id,
+                    campaign_id=uuid.UUID(campaign_id),
+                    expected_version=int(campaign["version"]),
+                    reason="concurrent lock-order regression",
+                    new_deadline_at=dt.datetime.now(dt.UTC) + dt.timedelta(days=1),
+                )
+                db.commit()
+                return row.status.value
+            except CampaignError:
+                db.rollback()
+                return "reopen-rejected"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        submit_future = pool.submit(submit)
+        reopen_future = pool.submit(reopen)
+        submit_outcome = submit_future.result(timeout=20)
+        reopen_outcome = reopen_future.result(timeout=20)
+
+    assert submit_outcome == "rejected"
+    assert reopen_outcome == "RECOUNT"
+    assert _session_row(str(session_id)).status is SessionStatus.CANCELLED
+    cleanup_inventory_test_data()
+
+
+def test_concurrent_event_and_reopen_follow_campaign_session_lock_order() -> None:
+    campaign_id, batch_id, _operator = _submitted_campaign()
+    recount_operator = create_operator_user()
+    _as_manager()
+    _request_recount(campaign_id, recount_operator)
+    _as_operator(recount_operator)
+    session = _start_count(campaign_id)
+    session_id = uuid.UUID(str(session["id"]))
+    product_id, _reference = batch_products(batch_id)[0]
+    _force_deadline_past(campaign_id)
+
+    manager_id = _as_manager()
+    campaign = _campaign(campaign_id)
+    gate = Barrier(2)
+
+    def add_event() -> str:
+        gate.wait(timeout=10)
+        with SessionLocal() as db:
+            try:
+                event_service.process_event(
+                    db,
+                    session_id=session_id,
+                    actor_id=recount_operator,
+                    payload=EventInput(
+                        client_event_uuid=uuid.uuid4(),
+                        event_type=CountEventType.MANUAL_ADD,
+                        product_id=product_id,
+                        quantity=decimal.Decimal("1"),
+                    ),
+                )
+            except CountError:
+                db.rollback()
+                return "rejected"
+            return "created"
+
+    def reopen() -> str:
+        gate.wait(timeout=10)
+        with SessionLocal() as db:
+            try:
+                row = campaign_service.reopen_campaign(
+                    db,
+                    actor_id=manager_id,
+                    campaign_id=uuid.UUID(campaign_id),
+                    expected_version=int(campaign["version"]),
+                    reason="concurrent event lock-order regression",
+                    new_deadline_at=dt.datetime.now(dt.UTC) + dt.timedelta(days=1),
+                )
+                db.commit()
+                return row.status.value
+            except CampaignError:
+                db.rollback()
+                return "reopen-rejected"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        event_future = pool.submit(add_event)
+        reopen_future = pool.submit(reopen)
+        event_outcome = event_future.result(timeout=20)
+        reopen_outcome = reopen_future.result(timeout=20)
+
+    assert event_outcome == "rejected"
+    assert reopen_outcome == "RECOUNT"
+    assert _session_row(str(session_id)).status is SessionStatus.CANCELLED
     cleanup_inventory_test_data()
 
 

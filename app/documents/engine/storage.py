@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import uuid
 from pathlib import Path
 
 from app.core.config import get_settings
@@ -39,7 +40,13 @@ def write_document(relative_path: str, data: bytes) -> Path:
     if target == root or not target.is_relative_to(root):
         raise DocumentStorageError("Ruta de documento invalida", 400, "DOCUMENT_PATH_INVALID")
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(data)
+    temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_bytes(data)
+        temporary.replace(target)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
     return target
 
 

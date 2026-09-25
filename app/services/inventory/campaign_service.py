@@ -350,19 +350,56 @@ def reopen_campaign(
     # F007: una sesion de reconteo caducada NO revive con el reopen. Se
     # cancela (sin borrar historia) y el reconteo vuelve a ASSIGNED para que
     # un administrador reasigne o reinicie de forma explicita.
-    stale_recounts = list(
+    stale_recount_ids = list(
         db.execute(
-            select(InventoryRecount)
+            select(InventoryRecount.id)
             .where(
                 InventoryRecount.inventory_campaign_id == campaign_id,
                 InventoryRecount.status == RecountStatus.IN_PROGRESS,
             )
-            .with_for_update()
+            .order_by(InventoryRecount.id)
         ).scalars()
+    )
+    stale_session_ids = list(
+        db.execute(
+            select(InventoryRecount.resulting_session_id)
+            .where(
+                InventoryRecount.id.in_(stale_recount_ids),
+                InventoryRecount.resulting_session_id.is_not(None),
+            )
+            .order_by(InventoryRecount.resulting_session_id)
+        ).scalars()
+    ) if stale_recount_ids else []
+    # A stale recount may cancel its session. Lock sessions before recount rows,
+    # matching submit_session's campaign -> session -> recount order.
+    stale_sessions = {
+        session.id: session
+        for session in (
+            db.execute(
+                select(InventoryCountSession)
+                .where(InventoryCountSession.id.in_(stale_session_ids))
+                .order_by(InventoryCountSession.id)
+                .with_for_update()
+            ).scalars()
+            if stale_session_ids
+            else []
+        )
+    }
+    stale_recounts = (
+        list(
+            db.execute(
+                select(InventoryRecount)
+                .where(InventoryRecount.id.in_(stale_recount_ids))
+                .order_by(InventoryRecount.id)
+                .with_for_update()
+            ).scalars()
+        )
+        if stale_recount_ids
+        else []
     )
     for recount in stale_recounts:
         if recount.resulting_session_id is not None:
-            stale_session = db.get(InventoryCountSession, recount.resulting_session_id)
+            stale_session = stale_sessions.get(recount.resulting_session_id)
             if (
                 stale_session is not None
                 and stale_session.status is SessionStatus.IN_PROGRESS

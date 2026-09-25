@@ -9,12 +9,13 @@ from types import SimpleNamespace
 
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 
 from app.api import admin as admin_api
-from app.db.session import SessionLocal
+from app.db.session import SessionLocal, engine
 from app.main import app
 from app.models import Role, User, UserRole
+from app.services.auth import rbac_service
 from tests.auth_helpers import cleanup_auth_test_data, create_test_user, override_auth
 
 client = TestClient(app)
@@ -43,10 +44,49 @@ def test_list_and_get_user() -> None:
     assert listed.status_code == 200
     assert any(item["id"] == str(target) for item in listed.json())
 
+    first_page = client.get("/api/v1/admin/users?limit=1&offset=0")
+    second_page = client.get("/api/v1/admin/users?limit=1&offset=1")
+    assert first_page.status_code == second_page.status_code == 200
+    assert len(first_page.json()) == len(second_page.json()) == 1
+    assert first_page.json()[0]["id"] != second_page.json()[0]["id"]
+
     fetched = client.get(f"/api/v1/admin/users/{target}")
     assert fetched.status_code == 200
     assert fetched.json()["display_name"] == "Objetivo Uno"
     cleanup_auth_test_data()
+
+
+def test_list_users_batches_role_lookup() -> None:
+    cleanup_auth_test_data()
+    target = create_test_user(email="test-auth-batched-role@example.invalid")
+    _as_admin()
+    assigned = client.post(f"/api/v1/admin/users/{target}/roles/OPERATOR")
+    assert assigned.status_code == 200, assigned.text
+
+    statements: list[str] = []
+
+    def collect_role_queries(
+        _connection: object,
+        _cursor: object,
+        statement: str,
+        _parameters: object,
+        _context: object,
+        _executemany: bool,
+    ) -> None:
+        if "user_roles" in statement.lower():
+            statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", collect_role_queries)
+    try:
+        with SessionLocal() as db:
+            users = rbac_service.list_users(db, limit=100, offset=0)
+        assert len(statements) == 1
+        target_entry = next((item for item in users if item[0].id == target), None)
+        assert target_entry is not None
+        assert "OPERATOR" in target_entry[1]
+    finally:
+        event.remove(engine, "before_cursor_execute", collect_role_queries)
+        cleanup_auth_test_data()
 
 
 def test_get_unknown_user_is_404() -> None:

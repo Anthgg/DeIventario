@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -25,13 +25,15 @@ class ActiveUpdate(BaseModel):
     is_active: bool
 
 
-def _payload(db: Session, user: User) -> dict[str, Any]:
+def _payload(
+    db: Session, user: User, roles: list[str] | None = None
+) -> dict[str, Any]:
     return {
         "id": str(user.id),
         "email": user.email,
         "display_name": user.display_name,
         "is_active": user.is_active,
-        "roles": rbac_service.user_roles(db, user.id),
+        "roles": roles if roles is not None else rbac_service.user_roles(db, user.id),
     }
 
 
@@ -43,8 +45,16 @@ def _get_user_or_404(db: Session, user_id: uuid.UUID) -> User:
 
 
 @router.get("")
-def list_users(current: RequireUsersRead, db: Database) -> list[dict[str, Any]]:
-    return [_payload(db, user) for user, _roles in rbac_service.list_users(db)]
+def list_users(
+    current: RequireUsersRead,
+    db: Database,
+    limit: Annotated[int, Query(ge=1, le=200)] = 100,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> list[dict[str, Any]]:
+    return [
+        _payload(db, user, roles)
+        for user, roles in rbac_service.list_users(db, limit=limit, offset=offset)
+    ]
 
 
 @router.get("/{user_id}")

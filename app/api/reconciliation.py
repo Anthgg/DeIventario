@@ -104,10 +104,16 @@ def reconciliation_list(
 
 @router.get("/campaigns/{campaign_id}/reconciliation/sessions")
 def reconciliation_sessions(
-    campaign_id: uuid.UUID, current: RequireReconcile, db: Database
+    campaign_id: uuid.UUID,
+    current: RequireReconcile,
+    db: Database,
+    limit: Annotated[int, Query(ge=1, le=200)] = 100,
+    offset: Annotated[int, Query(ge=0)] = 0,
 ) -> list[dict[str, Any]]:
     try:
-        return reconciliation_service.list_sessions(db, campaign_id)
+        return reconciliation_service.list_sessions(
+            db, campaign_id, limit=limit, offset=offset
+        )
     except (ReconciliationError, CampaignError) as exc:
         raise _handle(exc) from exc
 

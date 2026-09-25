@@ -259,30 +259,57 @@ def update_logo(
     target = (directory / relative_path).resolve()
     if target.parent != directory:
         raise OrganizationError("Ruta de logo invalida", 400, "LOGO_PATH_INVALID")
-    target.write_bytes(data)
-
     row = get_settings(db, lock=True)
-    row.logo_path = relative_path
-    row.logo_sha256 = digest
-    row.logo_media_type = sniffed
-    row.logo_original_name = Path(original_name).name if original_name else None
-    row.version += 1
-    row.updated_by = actor_id
-    db.flush()
-    audit_service.record(
-        db,
-        action=audit_service.ORGANIZATION_LOGO_UPDATED,
-        actor_user_id=actor_id,
-        entity_type="organization_settings",
-        entity_id=row.id,
-        metadata={
-            "version": row.version,
-            "sha256": digest,
-            "media_type": sniffed,
-            "size": len(data),
-        },
-    )
-    db.commit()
+    previous_logo_path = row.logo_path
+    target_existed = target.exists()
+    try:
+        if not target_existed:
+            temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+            try:
+                temporary.write_bytes(data)
+                temporary.replace(target)
+            except BaseException:
+                temporary.unlink(missing_ok=True)
+                raise
+
+        row.logo_path = relative_path
+        row.logo_sha256 = digest
+        row.logo_media_type = sniffed
+        row.logo_original_name = Path(original_name).name if original_name else None
+        row.version += 1
+        row.updated_by = actor_id
+        db.flush()
+        audit_service.record(
+            db,
+            action=audit_service.ORGANIZATION_LOGO_UPDATED,
+            actor_user_id=actor_id,
+            entity_type="organization_settings",
+            entity_id=row.id,
+            metadata={
+                "version": row.version,
+                "sha256": digest,
+                "media_type": sniffed,
+                "size": len(data),
+            },
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        if not target_existed and previous_logo_path != relative_path:
+            try:
+                file_is_referenced = (
+                    db.execute(
+                        select(OrganizationSettings.id).where(
+                            OrganizationSettings.logo_path == relative_path
+                        )
+                    ).scalar_one_or_none()
+                    is not None
+                )
+            except Exception:
+                file_is_referenced = True
+            if not file_is_referenced:
+                target.unlink(missing_ok=True)
+        raise
     return _now_payload(row)
 
 

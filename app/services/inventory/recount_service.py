@@ -299,6 +299,16 @@ def cancel_recount(
     if preview is None:
         raise RecountError("Reconteo no encontrado", 404, "RECOUNT_NOT_FOUND")
     campaign = campaign_service.lock_campaign(db, preview.inventory_campaign_id)
+    db.refresh(preview)
+    session = (
+        db.execute(
+            select(InventoryCountSession)
+            .where(InventoryCountSession.id == preview.resulting_session_id)
+            .with_for_update()
+        ).scalar_one_or_none()
+        if preview.resulting_session_id is not None
+        else None
+    )
     recount = lock_recount(db, recount_id)
     check_recount_version(recount, expected_version)
     if not reason or not reason.strip():
@@ -307,12 +317,10 @@ def cancel_recount(
         raise RecountError("El reconteo no esta abierto", 409, "RECOUNT_NOT_OPEN")
 
     session_cancelled = False
-    if recount.resulting_session_id is not None:
-        session = db.get(InventoryCountSession, recount.resulting_session_id)
-        if session is not None and session.status is SessionStatus.IN_PROGRESS:
-            session.status = SessionStatus.CANCELLED
-            session.version += 1
-            session_cancelled = True
+    if session is not None and session.status is SessionStatus.IN_PROGRESS:
+        session.status = SessionStatus.CANCELLED
+        session.version += 1
+        session_cancelled = True
 
     assignment = db.execute(
         select(InventoryAssignment)
@@ -381,6 +389,33 @@ def reassign_recount(
     if preview is None:
         raise RecountError("Reconteo no encontrado", 404, "RECOUNT_NOT_FOUND")
     campaign = campaign_service.lock_campaign(db, preview.inventory_campaign_id)
+    db.refresh(preview)
+    current = campaign_service.active_assignment(db, campaign.id)
+    session_ids = {preview.resulting_session_id} if preview.resulting_session_id else set()
+    if current is not None:
+        session_ids.update(
+            db.execute(
+                select(InventoryCountSession.id)
+                .where(
+                    InventoryCountSession.assignment_id == current.id,
+                    InventoryCountSession.status == SessionStatus.IN_PROGRESS,
+                )
+                .order_by(InventoryCountSession.id)
+            ).scalars()
+        )
+    locked_sessions = (
+        {
+            session.id: session
+            for session in db.execute(
+                select(InventoryCountSession)
+                .where(InventoryCountSession.id.in_(session_ids))
+                .order_by(InventoryCountSession.id)
+                .with_for_update()
+            ).scalars()
+        }
+        if session_ids
+        else {}
+    )
     recount = lock_recount(db, recount_id)
     check_recount_version(recount, expected_version)
     if recount.status not in OPEN_RECOUNT_STATUSES:
@@ -397,23 +432,19 @@ def reassign_recount(
         # §32: la sesion ya iniciada se CANCELA (datos preservados) y el
         # reconteo vuelve a ASSIGNED para iniciar una sesion nueva.
         if previous_session_id is not None:
-            session = db.get(InventoryCountSession, previous_session_id)
+            session = locked_sessions.get(previous_session_id)
             if session is not None and session.status is SessionStatus.IN_PROGRESS:
                 session.status = SessionStatus.CANCELLED
                 session.version += 1
         recount.resulting_session_id = None
 
-    current = campaign_service.active_assignment(db, campaign.id)
     if current is not None:
-        sessions = list(
-            db.execute(
-                select(InventoryCountSession).where(
-                    InventoryCountSession.assignment_id == current.id,
-                    InventoryCountSession.status == SessionStatus.IN_PROGRESS,
-                )
-            ).scalars()
-        )
-        for session in sessions:
+        for session in locked_sessions.values():
+            if (
+                session.assignment_id != current.id
+                or session.status is not SessionStatus.IN_PROGRESS
+            ):
+                continue
             session.status = SessionStatus.CANCELLED
             session.version += 1
         current.status = AssignmentStatus.REVOKED
@@ -457,22 +488,30 @@ def get_recount(db: Session, recount_id: uuid.UUID) -> InventoryRecount:
     return recount
 
 
-def list_campaign_recounts(db: Session, campaign_id: uuid.UUID) -> list[InventoryRecount]:
+def list_campaign_recounts(
+    db: Session, campaign_id: uuid.UUID, *, limit: int = 100, offset: int = 0
+) -> list[InventoryRecount]:
     return list(
         db.execute(
             select(InventoryRecount)
             .where(InventoryRecount.inventory_campaign_id == campaign_id)
-            .order_by(InventoryRecount.created_at.desc())
+            .order_by(InventoryRecount.created_at.desc(), InventoryRecount.id)
+            .offset(offset)
+            .limit(limit)
         ).scalars()
     )
 
 
-def list_my_recounts(db: Session, user_id: uuid.UUID) -> list[InventoryRecount]:
+def list_my_recounts(
+    db: Session, user_id: uuid.UUID, *, limit: int = 100, offset: int = 0
+) -> list[InventoryRecount]:
     return list(
         db.execute(
             select(InventoryRecount)
             .where(InventoryRecount.assigned_user_id == user_id)
-            .order_by(InventoryRecount.created_at.desc())
+            .order_by(InventoryRecount.created_at.desc(), InventoryRecount.id)
+            .offset(offset)
+            .limit(limit)
         ).scalars()
     )
 

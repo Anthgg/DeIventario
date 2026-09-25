@@ -420,10 +420,15 @@ def list_reconciliation(
     }
 
 
-def list_sessions(db: Session, campaign_id: uuid.UUID) -> list[dict[str, object]]:
+def list_sessions(
+    db: Session, campaign_id: uuid.UUID, *, limit: int = 100, offset: int = 0
+) -> list[dict[str, object]]:
     campaign_service.get_campaign(db, campaign_id)
     return comparison_service.session_summaries(
-        db, comparison_service.submitted_sessions(db, campaign_id)
+        db,
+        comparison_service.submitted_sessions(
+            db, campaign_id, limit=limit, offset=offset
+        ),
     )
 
 

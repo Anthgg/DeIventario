@@ -6,7 +6,7 @@ import datetime as dt
 import decimal
 import uuid
 
-from sqlalchemy import func, select
+from sqlalchemy import func, literal, select, union_all
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -56,6 +56,18 @@ def lock_session(db: Session, session_id: uuid.UUID) -> InventoryCountSession:
     return session
 
 
+def lock_campaign_for_session(db: Session, session_id: uuid.UUID) -> InventoryCampaign:
+    """Acquire a session's campaign lock first, preserving campaign/session order."""
+    campaign_id = db.execute(
+        select(InventoryCountSession.inventory_campaign_id).where(
+            InventoryCountSession.id == session_id
+        )
+    ).scalar_one_or_none()
+    if campaign_id is None:
+        raise CountError("Sesion de conteo no encontrada", 404)
+    return campaign_service.lock_campaign(db, campaign_id)
+
+
 def get_session(db: Session, session_id: uuid.UUID) -> InventoryCountSession:
     session = db.get(InventoryCountSession, session_id)
     if session is None:
@@ -63,10 +75,18 @@ def get_session(db: Session, session_id: uuid.UUID) -> InventoryCountSession:
     return session
 
 
-def assert_campaign_active(db: Session, session: InventoryCountSession) -> InventoryCampaign:
-    campaign = db.get(InventoryCampaign, session.inventory_campaign_id)
+def assert_campaign_active(
+    db: Session,
+    session: InventoryCountSession,
+    *,
+    campaign: InventoryCampaign | None = None,
+) -> InventoryCampaign:
+    if campaign is None:
+        campaign = db.get(InventoryCampaign, session.inventory_campaign_id)
     if campaign is None:
         raise CountError("Campana no encontrada", 404)
+    if campaign.id != session.inventory_campaign_id:
+        raise CountError("La sesion no pertenece a la campana", 409)
     if campaign_service.expire_campaign_if_due(db, campaign):
         db.commit()
         raise CountError("La campana expiro", 409, "CAMPAIGN_EXPIRED")
@@ -243,52 +263,63 @@ def session_actuals(db: Session, session_id: uuid.UUID) -> tuple[decimal.Decimal
     return decimal.Decimal(units), int(distinct), int(events)
 
 
-def session_items(db: Session, session_id: uuid.UUID) -> list[dict[str, object]]:
+def session_items(
+    db: Session, session_id: uuid.UUID, *, limit: int = 100, offset: int = 0
+) -> list[dict[str, object]]:
     """Items operativos BLIND-SAFE: PRODUCT (incluye extras sin marcar) y UNKNOWN.
 
     Nunca expone is_extra, expected, diferencia ni costos: la clasificacion es
     administrativa. Un UNKNOWN se identifica solo por kind para que el frontend
     sepa que no hay descripcion maestra (sin error ni bloqueo).
     """
-    rows = db.execute(
-        select(InventoryCountTotal, Product)
+    products = (
+        select(
+            literal("PRODUCT").label("kind"),
+            Product.id.label("product_id"),
+            Product.internal_reference.label("internal_reference"),
+            Product.name.label("name"),
+            InventoryCountTotal.quantity.label("quantity"),
+            InventoryCountTotal.damaged_quantity.label("damaged_quantity"),
+        )
         .join(Product, Product.id == InventoryCountTotal.product_id)
         .where(
             InventoryCountTotal.session_id == session_id,
             InventoryCountTotal.quantity != 0,
         )
-    ).all()
-    items: list[dict[str, object]] = [
-        {
-            "kind": "PRODUCT",
-            "product_id": str(product.id),
-            "internal_reference": product.internal_reference,
-            "name": product.name,
-            "quantity": _q(total.quantity),
-            "damaged_quantity": _q(total.damaged_quantity),
-        }
-        for total, product in rows
-    ]
-    unknowns = db.execute(
-        select(InventoryUnknownCode)
-        .where(
-            InventoryUnknownCode.session_id == session_id,
-            InventoryUnknownCode.quantity != 0,
-        )
-    ).scalars()
-    items.extend(
-        {
-            "kind": "UNKNOWN",
-            "product_id": None,
-            "internal_reference": unknown.scanned_code,
-            "name": None,
-            "quantity": _q(unknown.quantity),
-            "damaged_quantity": _q(unknown.damaged_quantity),
-        }
-        for unknown in unknowns
     )
-    items.sort(key=lambda item: str(item["internal_reference"]))
-    return items
+    unknowns = select(
+        literal("UNKNOWN").label("kind"),
+        literal(None, type_=Product.id.type).label("product_id"),
+        InventoryUnknownCode.scanned_code.label("internal_reference"),
+        literal(None, type_=Product.name.type).label("name"),
+        InventoryUnknownCode.quantity.label("quantity"),
+        InventoryUnknownCode.damaged_quantity.label("damaged_quantity"),
+    ).where(
+        InventoryUnknownCode.session_id == session_id,
+        InventoryUnknownCode.quantity != 0,
+    )
+    combined = union_all(products, unknowns).subquery()
+    rows = db.execute(
+        select(combined)
+        .order_by(
+            combined.c.internal_reference,
+            combined.c.kind,
+            combined.c.product_id,
+        )
+        .offset(offset)
+        .limit(limit)
+    ).all()
+    return [
+        {
+            "kind": row.kind,
+            "product_id": str(row.product_id) if row.product_id is not None else None,
+            "internal_reference": row.internal_reference,
+            "name": row.name,
+            "quantity": _q(row.quantity),
+            "damaged_quantity": _q(row.damaged_quantity),
+        }
+        for row in rows
+    ]
 
 
 def finish_check(db: Session, session: InventoryCountSession) -> dict[str, object]:
@@ -365,6 +396,9 @@ def submit_session(
     expected_version: int,
     confirm_missing: bool,
 ) -> tuple[InventoryCountSession, bool]:
+    # Multi-row campaign transitions take locks in campaign -> session -> recount
+    # order. Keeping the campaign lock first avoids a submit/reopen lock cycle.
+    campaign = lock_campaign_for_session(db, session_id)
     session = lock_session(db, session_id)
     if session.status is SessionStatus.SUBMITTED:
         db.commit()
@@ -373,7 +407,7 @@ def submit_session(
         raise CountError("Conflicto de version", 409)
     if session.status is not SessionStatus.IN_PROGRESS:
         raise CountError("La sesion no esta en curso", 409, "SESSION_NOT_OPEN")
-    campaign = assert_campaign_active(db, session)
+    campaign = assert_campaign_active(db, session, campaign=campaign)
     if session.user_id != actor_id:
         raise CountError("No eres el dueno de esta sesion", 403)
     assignment = campaign_service.active_assignment(db, session.inventory_campaign_id)
@@ -463,12 +497,16 @@ def submit_session(
     return session, False
 
 
-def list_campaign_sessions(db: Session, campaign_id: uuid.UUID) -> list[dict[str, object]]:
+def list_campaign_sessions(
+    db: Session, campaign_id: uuid.UUID, *, limit: int = 100, offset: int = 0
+) -> list[dict[str, object]]:
     sessions = list(
         db.execute(
             select(InventoryCountSession)
             .where(InventoryCountSession.inventory_campaign_id == campaign_id)
-            .order_by(InventoryCountSession.session_number)
+            .order_by(InventoryCountSession.session_number, InventoryCountSession.id)
+            .offset(offset)
+            .limit(limit)
         ).scalars()
     )
     user_ids = {session.user_id for session in sessions}

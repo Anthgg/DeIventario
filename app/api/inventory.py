@@ -109,7 +109,12 @@ def _iso(value: dt.datetime | None) -> str | None:
 
 
 @router.get("/locations")
-def list_locations(current: RequireInventoryRead, db: Database) -> list[dict[str, Any]]:
+def list_locations(
+    current: RequireInventoryRead,
+    db: Database,
+    limit: Annotated[int, Query(ge=1, le=200)] = 100,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> list[dict[str, Any]]:
     return [
         {
             "id": str(item.id),
@@ -118,7 +123,7 @@ def list_locations(current: RequireInventoryRead, db: Database) -> list[dict[str
             "external_ref": item.external_ref,
             "active": item.active,
         }
-        for item in location_service.list_locations(db)
+        for item in location_service.list_locations(db, limit=limit, offset=offset)
     ]
 
 
@@ -178,9 +183,12 @@ def update_location(
 
 @router.get("/snapshot-sources")
 def list_snapshot_sources(
-    current: RequireInventoryCreate, db: Database
+    current: RequireInventoryCreate,
+    db: Database,
+    limit: Annotated[int, Query(ge=1, le=200)] = 100,
+    offset: Annotated[int, Query(ge=0)] = 0,
 ) -> list[dict[str, Any]]:
-    return snapshot_service.eligible_sources(db)
+    return snapshot_service.eligible_sources(db, limit=limit, offset=offset)
 
 
 # ------------------------------ campaigns ------------------------------------
@@ -263,7 +271,12 @@ def update_campaign(
 
 
 @router.get("/my-assignments")
-def my_assignments(current: RequireInventoryRead, db: Database) -> list[dict[str, Any]]:
+def my_assignments(
+    current: RequireInventoryRead,
+    db: Database,
+    limit: Annotated[int, Query(ge=1, le=200)] = 100,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> list[dict[str, Any]]:
     rows = db.execute(
         select(InventoryAssignment, InventoryCampaign)
         .join(
@@ -275,6 +288,9 @@ def my_assignments(current: RequireInventoryRead, db: Database) -> list[dict[str
             InventoryAssignment.status == AssignmentStatus.ACTIVE,
             InventoryAssignment.revoked_at.is_(None),
         )
+        .order_by(InventoryAssignment.assigned_at.desc(), InventoryAssignment.id)
+        .offset(offset)
+        .limit(limit)
     ).all()
     result: list[dict[str, Any]] = []
     for assignment, campaign in rows:
@@ -329,13 +345,19 @@ def unassign_responsible(
 
 @router.get("/campaigns/{campaign_id}/assignments")
 def assignment_history(
-    campaign_id: uuid.UUID, current: RequireInventoryMonitor, db: Database
+    campaign_id: uuid.UUID,
+    current: RequireInventoryMonitor,
+    db: Database,
+    limit: Annotated[int, Query(ge=1, le=200)] = 100,
+    offset: Annotated[int, Query(ge=0)] = 0,
 ) -> list[dict[str, Any]]:
     try:
         campaign_service.get_campaign(db, campaign_id)
     except ServiceErrors as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
-    return assignment_service.history_payload(assignment_service.history(db, campaign_id))
+    return assignment_service.history_payload(
+        assignment_service.history(db, campaign_id, limit=limit, offset=offset)
+    )
 
 
 # ------------------------------- snapshot ------------------------------------

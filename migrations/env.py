@@ -10,7 +10,7 @@ from __future__ import annotations
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import pool
+from sqlalchemy import CheckConstraint, pool
 
 import app.models  # noqa: F401  (registrar todos los modelos en Base.metadata)
 from app.core.config import get_settings
@@ -22,6 +22,34 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 target_metadata = Base.metadata
+_TYPE_BOUND_CHECK_NAMES = frozenset(
+    constraint.name
+    for table in target_metadata.tables.values()
+    for constraint in table.constraints
+    if isinstance(constraint, CheckConstraint)
+    and getattr(constraint, "_type_bound", False)
+    and constraint.name is not None
+)
+
+
+def include_object(
+    obj: object,
+    name: str | None,
+    type_: str,
+    reflected: bool,
+    compare_to: object | None,
+) -> bool:
+    """Skip reflected Enum checks that SQLAlchemy models as type-bound only.
+
+    Alembic intentionally omits those implicit metadata checks from comparison;
+    filtering the matching reflected names prevents false drop operations.
+    The schema regression tests verify those database checks directly.
+    """
+    return not (
+        type_ == "check_constraint"
+        and reflected
+        and name in _TYPE_BOUND_CHECK_NAMES
+    )
 
 
 def get_url() -> str:
@@ -56,6 +84,7 @@ def run_migrations_online() -> None:
             connection=connection,
             target_metadata=target_metadata,
             compare_type=True,
+            include_object=include_object,
         )
 
         with context.begin_transaction():

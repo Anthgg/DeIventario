@@ -7,11 +7,13 @@ permisos (damage.review / inventory.reconcile), nunca solo con inventory.count.
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import (
@@ -122,30 +124,50 @@ async def upload_damage_evidence(
     max_bytes = get_settings().MAX_EVIDENCE_MB * 1024 * 1024
     data = await file.read(max_bytes + 1)
     relative_path: str | None = None
+    written_path: Path | None = None
     try:
         mime = validate_upload(declared_mime=file.content_type, data=data)
         relative_path = evidence_relative_path(damage.id, mime)
-        write_evidence_file(relative_path, data)
+        written_path = write_evidence_file(relative_path, data)
     except EvidenceError as exc:
         detail: dict[str, Any] = {"message": str(exc)}
         if exc.code:
             detail["error"] = exc.code
         raise HTTPException(status_code=exc.status_code, detail=detail) from exc
 
-    damage.evidence_path = relative_path
-    audit_service.record(
-        db,
-        action=audit_service.DAMAGE_EVIDENCE_ADDED,
-        actor_user_id=current.id,
-        entity_type="inventory_damage",
-        entity_id=damage.id,
-        metadata={
-            "session_id": str(session.id),
-            "content_type": mime,
-            "bytes": len(data),
-        },
-    )
-    db.commit()
+    try:
+        damage.evidence_path = relative_path
+        audit_service.record(
+            db,
+            action=audit_service.DAMAGE_EVIDENCE_ADDED,
+            actor_user_id=current.id,
+            entity_type="inventory_damage",
+            entity_id=damage.id,
+            metadata={
+                "session_id": str(session.id),
+                "content_type": mime,
+                "bytes": len(data),
+            },
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        if relative_path is not None and written_path is not None:
+            try:
+                file_is_referenced = (
+                    db.execute(
+                        select(InventoryDamage.id).where(
+                            InventoryDamage.id == damage_id,
+                            InventoryDamage.evidence_path == relative_path,
+                        )
+                    ).scalar_one_or_none()
+                    is not None
+                )
+            except Exception:
+                file_is_referenced = True
+            if not file_is_referenced:
+                written_path.unlink(missing_ok=True)
+        raise
     return {
         "damage_id": str(damage.id),
         "has_evidence": True,
@@ -184,9 +206,17 @@ def list_campaign_extras(
     current: RequireReconcile,
     db: Database,
     include_zero: Annotated[bool, Query()] = False,
+    limit: Annotated[int, Query(ge=1, le=200)] = 100,
+    offset: Annotated[int, Query(ge=0)] = 0,
 ) -> list[dict[str, Any]]:
     _campaign_or_404(db, campaign_id)
-    return exception_service.campaign_extras(db, campaign_id, include_zero=include_zero)
+    return exception_service.campaign_extras(
+        db,
+        campaign_id,
+        include_zero=include_zero,
+        limit=limit,
+        offset=offset,
+    )
 
 
 # --------------------------- codigos desconocidos ----------------------------
@@ -194,10 +224,16 @@ def list_campaign_extras(
 
 @router.get("/campaigns/{campaign_id}/unknown-codes")
 def list_campaign_unknown_codes(
-    campaign_id: uuid.UUID, current: RequireReconcile, db: Database
+    campaign_id: uuid.UUID,
+    current: RequireReconcile,
+    db: Database,
+    limit: Annotated[int, Query(ge=1, le=200)] = 100,
+    offset: Annotated[int, Query(ge=0)] = 0,
 ) -> list[dict[str, Any]]:
     _campaign_or_404(db, campaign_id)
-    return exception_service.campaign_unknown_codes(db, campaign_id)
+    return exception_service.campaign_unknown_codes(
+        db, campaign_id, limit=limit, offset=offset
+    )
 
 
 @router.post("/unknown-codes/{unknown_id}/resolve")

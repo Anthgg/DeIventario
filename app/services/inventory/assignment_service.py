@@ -130,12 +130,16 @@ def unassign(
     db.commit()
 
 
-def history(db: Session, campaign_id: uuid.UUID) -> list[InventoryAssignment]:
+def history(
+    db: Session, campaign_id: uuid.UUID, *, limit: int = 100, offset: int = 0
+) -> list[InventoryAssignment]:
     return list(
         db.execute(
             select(InventoryAssignment)
             .where(InventoryAssignment.inventory_campaign_id == campaign_id)
-            .order_by(InventoryAssignment.assigned_at)
+            .order_by(InventoryAssignment.assigned_at, InventoryAssignment.id)
+            .offset(offset)
+            .limit(limit)
         ).scalars()
     )
 

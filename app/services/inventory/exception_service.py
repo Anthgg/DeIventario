@@ -141,7 +141,12 @@ def campaign_damages(
 
 
 def campaign_extras(
-    db: Session, campaign_id: uuid.UUID, *, include_zero: bool
+    db: Session,
+    campaign_id: uuid.UUID,
+    *,
+    include_zero: bool,
+    limit: int = 100,
+    offset: int = 0,
 ) -> list[dict[str, object]]:
     query = (
         select(InventoryExtraItem, Product, InventoryCountSession)
@@ -154,7 +159,11 @@ def campaign_extras(
     )
     if not include_zero:
         query = query.where(InventoryExtraItem.quantity != 0)
-    rows = db.execute(query.order_by(Product.internal_reference)).all()
+    rows = db.execute(
+        query.order_by(Product.internal_reference, InventoryExtraItem.id)
+        .offset(offset)
+        .limit(limit)
+    ).all()
     return [
         {
             "id": str(extra.id),
@@ -170,7 +179,9 @@ def campaign_extras(
     ]
 
 
-def campaign_unknown_codes(db: Session, campaign_id: uuid.UUID) -> list[dict[str, object]]:
+def campaign_unknown_codes(
+    db: Session, campaign_id: uuid.UUID, *, limit: int = 100, offset: int = 0
+) -> list[dict[str, object]]:
     rows = db.execute(
         select(InventoryUnknownCode)
         .join(
@@ -178,7 +189,9 @@ def campaign_unknown_codes(db: Session, campaign_id: uuid.UUID) -> list[dict[str
             InventoryCountSession.id == InventoryUnknownCode.session_id,
         )
         .where(InventoryCountSession.inventory_campaign_id == campaign_id)
-        .order_by(InventoryUnknownCode.created_at)
+        .order_by(InventoryUnknownCode.created_at, InventoryUnknownCode.id)
+        .offset(offset)
+        .limit(limit)
     ).scalars()
     return [
         {

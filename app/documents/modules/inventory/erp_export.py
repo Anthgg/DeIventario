@@ -136,7 +136,9 @@ def render(ctx: InventoryDocContext, *, profile: dict[str, Any]) -> bytes:
         return buffer.getvalue().encode(encoding)
 
     workbook = Workbook()
-    workbook.remove(workbook.active)
+    active_sheet = workbook.active
+    if active_sheet is not None:
+        workbook.remove(active_sheet)
     sheet_name = str(merged.get("code") or "Ajuste_ERP")
     write_sheet(workbook, sheet_name, headers, rows)
     return to_bytes(workbook)

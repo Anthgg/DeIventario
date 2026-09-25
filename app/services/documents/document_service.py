@@ -765,7 +765,7 @@ def generate_document(
 
     file_sha = sha256_hex(data)
     relative_path = f"{MODULE.value}/{document_number}.{spec.extension}"
-    document_storage.write_document(relative_path, data)
+    written_path = document_storage.write_document(relative_path, data)
 
     row = DocumentExport(
         id=uuid.uuid4(),
@@ -801,33 +801,55 @@ def generate_document(
         generated_by=actor_id,
         generated_at=generated_at,
     )
-    db.add(row)
-    db.flush()
-    _supersede_previous(
-        db,
-        document_type=document_type,
-        entity_id=campaign.id,
-        new_row=row,
-        actor_id=actor_id,
-    )
-    audit_service.record(
-        db,
-        action=audit_service.DOCUMENT_GENERATED,
-        actor_user_id=actor_id,
-        entity_type=ENTITY_TYPE,
-        entity_id=campaign.id,
-        metadata={
-            "document_id": str(row.id),
-            "document_number": document_number,
-            "document_type": document_type,
-            "format": spec.format.value,
-            "source_sha256": source_sha,
-            "branding_sha256": source_branding_sha,
-            "file_sha256": file_sha,
-            "campaign_version": campaign.version,
-        },
-    )
-    db.commit()
+    try:
+        db.add(row)
+        db.flush()
+        _supersede_previous(
+            db,
+            document_type=document_type,
+            entity_id=campaign.id,
+            new_row=row,
+            actor_id=actor_id,
+        )
+        audit_service.record(
+            db,
+            action=audit_service.DOCUMENT_GENERATED,
+            actor_user_id=actor_id,
+            entity_type=ENTITY_TYPE,
+            entity_id=campaign.id,
+            metadata={
+                "document_id": str(row.id),
+                "document_number": document_number,
+                "document_type": document_type,
+                "format": spec.format.value,
+                "source_sha256": source_sha,
+                "branding_sha256": source_branding_sha,
+                "file_sha256": file_sha,
+                "campaign_version": campaign.version,
+            },
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        try:
+            file_is_referenced = (
+                db.execute(
+                    select(DocumentExport.id).where(
+                        DocumentExport.file_path == relative_path,
+                        DocumentExport.status.in_(
+                            (DocumentStatus.GENERATED, DocumentStatus.SUPERSEDED)
+                        ),
+                    )
+                ).scalar_one_or_none()
+                is not None
+            )
+        except Exception:
+            # If the commit outcome cannot be read, preserve the file rather
+            # than risk deleting a document whose metadata did commit.
+            file_is_referenced = True
+        if not file_is_referenced:
+            written_path.unlink(missing_ok=True)
+        raise
     return document_payload(row, already_generated=False, warnings=warnings)
 
 

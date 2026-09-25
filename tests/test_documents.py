@@ -9,16 +9,21 @@ from __future__ import annotations
 
 import datetime as dt
 import decimal
+import hashlib
 import io
 import uuid
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 
 import openpyxl
 import pytest
 from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.db.session import SessionLocal
+from app.documents.engine import storage as document_storage
 from app.documents.modules.inventory.audit_export import SHEET_NAMES
 from app.documents.modules.inventory.erp_export import (
     CANONICAL_COLUMNS,
@@ -38,6 +43,8 @@ from app.models import (
     Product,
 )
 from app.models.enums import DamageAction, DocumentStatus, RecountStatus
+from app.services.documents import document_service, export_profile_service
+from app.services.system import organization_service
 from tests.auth_helpers import override_auth
 from tests.inventory_helpers import (
     PERMS_CLOSE,
@@ -622,6 +629,112 @@ def test_generation_requires_exports_create_permission() -> None:
     status, _body = _generate(ctx["campaign_id"], "management-report")
     assert status == 403
     assert _document_count(ctx["campaign_id"]) == 0
+
+
+@pytest.mark.parametrize("document_type", ["management-report", "audit-export", "erp-adjustment"])
+def test_document_file_is_removed_when_metadata_commit_fails(
+    monkeypatch: pytest.MonkeyPatch, document_type: str
+) -> None:
+    ctx = _valued_for_documents()
+    actor_id = as_user(_DOCS_ID)
+    _configure_identity()
+    if document_type == "erp-adjustment":
+        with SessionLocal() as db:
+            export_profile_service.get_profile(db)
+    written_paths: list[Path] = []
+    write_document = document_storage.write_document
+
+    def track_write(relative_path: str, data: bytes) -> Path:
+        path = write_document(relative_path, data)
+        written_paths.append(path)
+        return path
+
+    def fail_commit(_session: Session) -> None:
+        raise RuntimeError("simulated database commit failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(document_storage, "write_document", track_write)
+        patch.setattr(Session, "commit", fail_commit)
+        with SessionLocal() as db, pytest.raises(
+            RuntimeError, match="simulated database commit failure"
+        ):
+            document_service.generate_document(
+                db,
+                actor_id=actor_id,
+                campaign_id=uuid.UUID(ctx["campaign_id"]),
+                document_type=document_type,
+            )
+
+    assert len(written_paths) == 1
+    assert written_paths[0].suffix == (
+        ".pdf" if document_type == "management-report" else ".xlsx"
+    )
+    assert not written_paths[0].exists()
+    assert _document_count(ctx["campaign_id"]) == 0
+
+
+@pytest.mark.parametrize("document_type", ["management-report", "audit-export", "erp-adjustment"])
+def test_document_metadata_is_not_persisted_when_file_write_fails(
+    monkeypatch: pytest.MonkeyPatch, document_type: str
+) -> None:
+    ctx = _valued_for_documents()
+    actor_id = as_user(_DOCS_ID)
+    _configure_identity()
+    attempted_paths: list[str] = []
+
+    def fail_write(relative_path: str, _data: bytes) -> Path:
+        attempted_paths.append(relative_path)
+        raise OSError("simulated document file finalization failure")
+
+    monkeypatch.setattr(document_storage, "write_document", fail_write)
+    with SessionLocal() as db, pytest.raises(
+        OSError, match="simulated document file finalization failure"
+    ):
+        document_service.generate_document(
+            db,
+            actor_id=actor_id,
+            campaign_id=uuid.UUID(ctx["campaign_id"]),
+            document_type=document_type,
+        )
+
+    assert len(attempted_paths) == 1
+    assert not (document_storage.document_root() / attempted_paths[0]).exists()
+    assert _document_count(ctx["campaign_id"]) == 0
+
+
+def test_logo_file_is_removed_when_metadata_commit_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = _PNG + uuid.uuid4().bytes
+    digest = hashlib.sha256(data).hexdigest()
+    target = Path(get_settings().BRANDING_DIR).resolve() / f"{digest}.png"
+    with SessionLocal() as db:
+        original_path = db.execute(
+            select(OrganizationSettings.logo_path)
+        ).scalar_one_or_none()
+
+    def fail_commit(_session: Session) -> None:
+        raise RuntimeError("simulated database commit failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Session, "commit", fail_commit)
+        with SessionLocal() as db, pytest.raises(
+            RuntimeError, match="simulated database commit failure"
+        ):
+            organization_service.update_logo(
+                db,
+                actor_id=None,
+                declared_mime="image/png",
+                data=data,
+                original_name="logo.png",
+            )
+
+    assert not target.exists()
+    with SessionLocal() as db:
+        current_path = db.execute(
+            select(OrganizationSettings.logo_path)
+        ).scalar_one_or_none()
+    assert current_path == original_path
 
 
 # ------------------------------- F010F: cierre -------------------------------

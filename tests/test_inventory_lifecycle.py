@@ -362,11 +362,14 @@ def test_my_assignments_only_returns_own() -> None:
 
 def test_snapshot_sources_lists_eligible_batches() -> None:
     cleanup_inventory_test_data()
+    source_batch_id = create_test_source_batch()
     as_user(PERMS_CREATE, roles=("MANAGER",))
     response = client.get("/api/v1/inventory/snapshot-sources")
     assert response.status_code == 200
     payload = response.json()
-    assert payload, "deben existir lotes elegibles (productos F002)"
+    assert any(item["id"] == str(source_batch_id) for item in payload), (
+        "debe listarse el lote elegible sintético creado por la prueba"
+    )
     first = payload[0]
     expected_keys = {
         "id",

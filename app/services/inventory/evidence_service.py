@@ -86,7 +86,13 @@ def write_evidence_file(relative_path: str, data: bytes) -> Path:
     target = (directory / relative_path).resolve()
     if target.parent != directory:
         raise EvidenceError("Ruta de evidencia invalida", 400, "EVIDENCE_PATH_INVALID")
-    target.write_bytes(data)
+    temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_bytes(data)
+        temporary.replace(target)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
     return target
 
 

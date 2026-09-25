@@ -59,7 +59,9 @@ def detect_scope(db: Session, batch_id: uuid.UUID) -> StockScope:
     return StockScope.LOCATION if with_location > 0 else StockScope.AGGREGATE
 
 
-def eligible_sources(db: Session) -> list[dict[str, object]]:
+def eligible_sources(
+    db: Session, *, limit: int = 100, offset: int = 0
+) -> list[dict[str, object]]:
     rows = db.execute(
         select(ImportBatch, func.count(StockSnapshot.id))
         .join(StockSnapshot, StockSnapshot.import_batch_id == ImportBatch.id)
@@ -68,7 +70,9 @@ def eligible_sources(db: Session) -> list[dict[str, object]]:
             ImportBatch.import_type.in_(ELIGIBLE_TYPES),
         )
         .group_by(ImportBatch.id)
-        .order_by(ImportBatch.completed_at.desc())
+        .order_by(ImportBatch.completed_at.desc(), ImportBatch.id)
+        .offset(offset)
+        .limit(limit)
     ).all()
     return [
         {

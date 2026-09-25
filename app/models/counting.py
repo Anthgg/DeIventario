@@ -32,9 +32,9 @@ class InventoryDamage(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
         sa.CheckConstraint(
             "(product_id IS NOT NULL AND scanned_code IS NULL) "
             "OR (product_id IS NULL AND scanned_code IS NOT NULL)",
-            name="ck_inventory_damages_target_exactly_one",
+            name="target_exactly_one",
         ),
-        sa.CheckConstraint("quantity > 0", name="ck_inventory_damages_quantity_positive"),
+        sa.CheckConstraint("quantity > 0", name="quantity_positive"),
     )
 
     session_id: Mapped[uuid.UUID] = mapped_column(
@@ -69,7 +69,7 @@ class InventoryExtraItem(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __table_args__ = (
         sa.UniqueConstraint("session_id", "product_id"),
         sa.CheckConstraint(
-            "quantity >= 0", name="ck_inventory_extra_items_quantity_non_negative"
+            "quantity >= 0", name="quantity_non_negative"
         ),
     )
 
@@ -97,14 +97,14 @@ class InventoryUnknownCode(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __table_args__ = (
         sa.UniqueConstraint("session_id", "scanned_code"),
         sa.CheckConstraint(
-            "quantity >= 0", name="ck_inventory_unknown_codes_quantity_non_negative"
+            "quantity >= 0", name="quantity_non_negative"
         ),
         sa.CheckConstraint(
-            "damaged_quantity >= 0", name="ck_inventory_unknown_codes_damaged_non_negative"
+            "damaged_quantity >= 0", name="damaged_non_negative"
         ),
         sa.CheckConstraint(
             "damaged_quantity <= quantity",
-            name="ck_inventory_unknown_codes_damaged_le_quantity",
+            name="damaged_le_quantity",
         ),
     )
 

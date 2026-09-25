@@ -244,7 +244,9 @@ def _audit_rows(audit_events: list[dict[str, Any]]) -> list[list[Any]]:
 def render(ctx: InventoryDocContext, *, extra_metadata: dict[str, Any]) -> bytes:
     """Renderiza el workbook de auditoria con las 10 hojas requeridas."""
     workbook = Workbook()
-    workbook.remove(workbook.active)
+    active_sheet = workbook.active
+    if active_sheet is not None:
+        workbook.remove(active_sheet)
     write_sheet(workbook, "Resumen", ["Campo", "Valor"], _summary_rows(ctx, extra_metadata))
     write_sheet(
         workbook,

@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from app.auth.dependencies import CurrentUser, Database, require_permission
@@ -77,7 +77,11 @@ def request_recount(
 
 @router.get("/campaigns/{campaign_id}/recounts")
 def list_campaign_recounts(
-    campaign_id: uuid.UUID, current: RequireMonitor, db: Database
+    campaign_id: uuid.UUID,
+    current: RequireMonitor,
+    db: Database,
+    limit: Annotated[int, Query(ge=1, le=200)] = 100,
+    offset: Annotated[int, Query(ge=0)] = 0,
 ) -> list[dict[str, Any]]:
     try:
         campaign_service.get_campaign(db, campaign_id)
@@ -85,7 +89,9 @@ def list_campaign_recounts(
         raise _handle(exc) from exc
     return [
         recount_service.admin_payload(db, recount)
-        for recount in recount_service.list_campaign_recounts(db, campaign_id)
+        for recount in recount_service.list_campaign_recounts(
+            db, campaign_id, limit=limit, offset=offset
+        )
     ]
 
 
@@ -103,10 +109,17 @@ def get_recount(recount_id: uuid.UUID, current: RequireRead, db: Database) -> di
 
 
 @router.get("/my-recounts")
-def my_recounts(current: RequireRead, db: Database) -> list[dict[str, Any]]:
+def my_recounts(
+    current: RequireRead,
+    db: Database,
+    limit: Annotated[int, Query(ge=1, le=200)] = 100,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> list[dict[str, Any]]:
     return [
         recount_service.owner_payload(db, recount)
-        for recount in recount_service.list_my_recounts(db, current.id)
+        for recount in recount_service.list_my_recounts(
+            db, current.id, limit=limit, offset=offset
+        )
     ]
 
 

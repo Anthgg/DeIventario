@@ -130,7 +130,11 @@ def get_batch(batch_id: uuid.UUID, current: RequireImportsRead, db: Database) ->
 
 @router.get("/{batch_id}/errors")
 def get_batch_errors(
-    batch_id: uuid.UUID, current: RequireImportsRead, db: Database
+    batch_id: uuid.UUID,
+    current: RequireImportsRead,
+    db: Database,
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+    offset: Annotated[int, Query(ge=0)] = 0,
 ) -> list[dict[str, object]]:
     batch = db.get(ImportBatch, batch_id)
     if batch is None:
@@ -138,7 +142,9 @@ def get_batch_errors(
     rows = db.execute(
         select(ImportErrorRecord)
         .where(ImportErrorRecord.import_batch_id == batch_id)
-        .order_by(ImportErrorRecord.row_number)
+        .order_by(ImportErrorRecord.row_number, ImportErrorRecord.id)
+        .offset(offset)
+        .limit(limit)
     ).scalars()
     return [
         {

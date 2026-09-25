@@ -8,10 +8,14 @@ from __future__ import annotations
 import decimal
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any
 
+import pytest
 from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.db.session import SessionLocal
 from app.models import (
     AuditEvent,
@@ -944,6 +948,49 @@ def test_evidence_upload_download_and_validation() -> None:
 
     not_found = client.get(f"/api/v1/inventory/damages/{uuid.uuid4()}/evidence")
     assert not_found.status_code == 404
+    cleanup_inventory_test_data()
+
+
+def test_evidence_file_is_removed_when_database_commit_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campaign_id, batch_id, operator_id = _ready_to_count()
+    product_id, _reference = batch_products(batch_id)[0]
+    _as_operator(operator_id)
+    sid = str(_start_session(campaign_id)["id"])
+    _post_event(sid, "MANUAL_ADD", product_id=product_id, quantity=2)
+    status, created = _post_event(
+        sid, "DAMAGE_ADD", product_id=product_id, quantity=1, reason="rollback evidence"
+    )
+    assert status == 200
+    with SessionLocal() as db:
+        record = db.execute(
+            select(InventoryDamage).where(
+                InventoryDamage.event_id == uuid.UUID(str(created["event_id"]))
+            )
+        ).scalar_one()
+        damage_id = record.id
+
+    _operator_with_evidence_perm(operator_id)
+    target = Path(get_settings().EVIDENCE_DIR).resolve() / f"{damage_id.hex}.png"
+
+    def fail_commit(_session: Session) -> None:
+        raise RuntimeError("simulated database commit failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Session, "commit", fail_commit)
+        with pytest.raises(RuntimeError, match="simulated database commit failure"):
+            client.post(
+                f"/api/v1/inventory/damages/{damage_id}/evidence",
+                files={"file": ("proof.png", _PNG, "image/png")},
+            )
+
+    assert not target.exists()
+    with SessionLocal() as db:
+        record = db.execute(
+            select(InventoryDamage).where(InventoryDamage.id == damage_id)
+        ).scalar_one()
+        assert record.evidence_path is None
     cleanup_inventory_test_data()
 
 

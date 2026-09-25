@@ -108,6 +108,27 @@ def revoke_role(db: Session, user_id: uuid.UUID, role_code: str) -> bool:
     return True
 
 
-def list_users(db: Session) -> list[tuple[User, list[str]]]:
-    users = list(db.execute(select(User).order_by(User.display_name)).scalars())
-    return [(user, user_roles(db, user.id)) for user in users]
+def list_users(
+    db: Session, *, limit: int = 100, offset: int = 0
+) -> list[tuple[User, list[str]]]:
+    users = list(
+        db.execute(
+            select(User)
+            .order_by(User.display_name, User.id)
+            .offset(offset)
+            .limit(limit)
+        ).scalars()
+    )
+    if not users:
+        return []
+
+    roles_by_user: dict[uuid.UUID, list[str]] = {}
+    role_rows = db.execute(
+        select(UserRole.user_id, Role.code)
+        .join(Role, Role.id == UserRole.role_id)
+        .where(UserRole.user_id.in_([user.id for user in users]))
+        .order_by(UserRole.user_id, Role.code)
+    ).all()
+    for user_id, role_code in role_rows:
+        roles_by_user.setdefault(user_id, []).append(role_code)
+    return [(user, roles_by_user.get(user.id, [])) for user in users]
