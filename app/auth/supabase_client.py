@@ -26,16 +26,16 @@ class SupabaseAuthClient:
     def sign_in(self, email: str, password: str) -> dict[str, Any]:
         return self._request(
             "POST",
-            "/auth/v1/token",
-            json_body={"email": email, "password": password, "grant_type": "password"},
+            "/auth/v1/token?grant_type=password",
+            json_body={"email": email, "password": password},
             apikey=self._anon_key,
         )
 
     def refresh(self, refresh_token: str) -> dict[str, Any]:
         return self._request(
             "POST",
-            "/auth/v1/token",
-            json_body={"refresh_token": refresh_token, "grant_type": "refresh_token"},
+            "/auth/v1/token?grant_type=refresh_token",
+            json_body={"refresh_token": refresh_token},
             apikey=self._anon_key,
         )
 
