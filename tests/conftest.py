@@ -75,7 +75,9 @@ if not _TEST_DATABASE_URL:
     event.listen(engine, "do_connect", _deny_unisolated_database_connection)
 
 
-_NO_DATABASE_TESTS = frozenset({"test_backend_audit_regressions.py"})
+_NO_DATABASE_TESTS = frozenset(
+    {"test_backend_audit_regressions.py", "test_supabase_auth_client.py"}
+)
 
 
 def pytest_collection_finish(session: pytest.Session) -> None:
