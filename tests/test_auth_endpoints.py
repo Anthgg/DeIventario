@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
@@ -103,6 +104,53 @@ def test_refresh_success_and_invalid() -> None:
     app.dependency_overrides[get_auth_service] = lambda: FakeAuthService(fail_refresh=True)
     bad = client.post("/api/v1/auth/refresh", json={"refresh_token": "***"})
     assert bad.status_code == 401
+
+
+def test_sensitive_validation_inputs_are_redacted_from_responses_and_logs(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    password_marker = f"FF002A_DUMMY_DO_NOT_LOG_{uuid.uuid4().hex}"
+    refresh_marker = f"FF002A_DUMMY_DO_NOT_LOG_{uuid.uuid4().hex}"
+    responses = [
+        (
+            password_marker,
+            client.post(
+                "/api/v1/auth/login",
+                json={"email": "audit@example.invalid", "password": [password_marker]},
+            ),
+        ),
+        (
+            refresh_marker,
+            client.post("/api/v1/auth/refresh", json={"refresh_token": [refresh_marker]}),
+        ),
+    ]
+
+    for marker, response in responses:
+        if response.status_code != 422:
+            pytest.fail("sensitive validation regression did not return 422")
+        details = response.json().get("detail")
+        if not isinstance(details, list) or not details:
+            pytest.fail("422 detail structure is missing")
+        if not all({"loc", "msg", "type"}.issubset(error) for error in details):
+            pytest.fail("422 detail entries are not usable")
+        if marker in response.text:
+            pytest.fail("422 response reflected a dummy credential")
+        if marker in caplog.text:
+            pytest.fail("application logs reflected a dummy credential")
+
+
+def test_validation_handler_preserves_non_sensitive_422_details() -> None:
+    response = client.post("/api/v1/auth/login", json={"email": ["invalid-email"]})
+    if response.status_code != 422:
+        pytest.fail("invalid non-sensitive input did not return 422")
+    details = response.json().get("detail")
+    if not isinstance(details, list) or not details:
+        pytest.fail("422 detail structure is missing")
+    email_error = next(
+        (error for error in details if error.get("loc") == ["body", "email"]), None
+    )
+    if email_error is None or not {"msg", "type"}.issubset(email_error):
+        pytest.fail("non-sensitive validation detail is not usable")
 
 
 def test_logout_success() -> None:
