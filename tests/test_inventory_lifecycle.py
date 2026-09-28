@@ -12,6 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from app.db.session import SessionLocal
 from app.models import InventoryAssignment
 from app.models.enums import AssignmentStatus, ImportBatchType
+from app.services.auth import rbac_service
 from tests.inventory_helpers import (
     PERMS_ASSIGN,
     PERMS_CREATE,
@@ -212,6 +213,55 @@ def test_detail_requires_read_permission() -> None:
 
 
 # -------------------------------- assignments --------------------------------
+
+
+def test_manager_can_list_paginated_active_count_candidates_only() -> None:
+    cleanup_inventory_test_data()
+    manager_id = as_user(PERMS_ASSIGN, roles=("MANAGER",))
+    eligible_ids = {create_operator_user(), create_operator_user()}
+    inactive_count_user_id = create_test_user(roles=("OPERATOR",), active=False)
+    active_without_count_id = create_test_user()
+
+    with SessionLocal() as db:
+        manager_permissions = rbac_service.user_permissions(db, manager_id)
+    assert "inventory.assign" in manager_permissions
+    assert "users.read" not in manager_permissions
+
+    pages = [
+        client.get(f"/api/v1/inventory/assignee-candidates?limit=1&offset={offset}")
+        for offset in range(3)
+    ]
+    assert all(response.status_code == 200 for response in pages)
+    payloads = [response.json() for response in pages]
+    assert all(payload["total"] == 3 for payload in payloads)
+    assert [payload["offset"] for payload in payloads] == [0, 1, 2]
+    candidates = [payload["items"][0] for payload in payloads]
+    assert {candidate["id"] for candidate in candidates} == {
+        str(manager_id),
+        *(str(user_id) for user_id in eligible_ids),
+    }
+    assert all(set(candidate) == {"id", "display_name", "email"} for candidate in candidates)
+    assert str(inactive_count_user_id) not in {candidate["id"] for candidate in candidates}
+    assert str(active_without_count_id) not in {candidate["id"] for candidate in candidates}
+
+
+def test_admin_can_list_assignee_candidates() -> None:
+    cleanup_inventory_test_data()
+    admin_id = as_user(PERMS_ASSIGN, roles=("ADMIN",))
+
+    response = client.get("/api/v1/inventory/assignee-candidates")
+
+    assert response.status_code == 200
+    assert str(admin_id) in {candidate["id"] for candidate in response.json()["items"]}
+
+
+def test_operator_cannot_list_assignee_candidates() -> None:
+    cleanup_inventory_test_data()
+    as_user(PERMS_READ, roles=("OPERATOR",))
+
+    response = client.get("/api/v1/inventory/assignee-candidates")
+
+    assert response.status_code == 403
 
 
 def test_assign_sets_assigned_status() -> None:

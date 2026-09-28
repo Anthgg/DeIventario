@@ -7,6 +7,7 @@ import uuid
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.auth.permissions import INVENTORY_COUNT
 from app.models import Permission, Role, RolePermission, User, UserRole
 
 ADMIN_ROLE_CODE = "ADMIN"
@@ -132,3 +133,27 @@ def list_users(
     for user_id, role_code in role_rows:
         roles_by_user.setdefault(user_id, []).append(role_code)
     return [(user, roles_by_user.get(user.id, [])) for user in users]
+
+
+def list_assignee_candidates(
+    db: Session, *, limit: int = 100, offset: int = 0
+) -> tuple[int, list[User]]:
+    """Lista usuarios activos con permiso efectivo de conteo."""
+    eligible_user_ids = (
+        select(UserRole.user_id)
+        .join(RolePermission, RolePermission.role_id == UserRole.role_id)
+        .join(Permission, Permission.id == RolePermission.permission_id)
+        .where(Permission.code == INVENTORY_COUNT)
+    )
+    eligible_users = (User.is_active.is_(True), User.id.in_(eligible_user_ids))
+    total = db.execute(select(func.count(User.id)).where(*eligible_users)).scalar_one()
+    users = list(
+        db.execute(
+            select(User)
+            .where(*eligible_users)
+            .order_by(User.display_name, User.id)
+            .offset(offset)
+            .limit(limit)
+        ).scalars()
+    )
+    return total, users

@@ -22,6 +22,7 @@ from app.auth.permissions import (
 )
 from app.models import InventoryAssignment, InventoryCampaign
 from app.models.enums import AssignmentStatus, CampaignStatus
+from app.services.auth import rbac_service
 from app.services.inventory import (
     assignment_service,
     campaign_service,
@@ -324,6 +325,25 @@ def assign_responsible(
         "status": assignment.status.value,
         "created": created,
         "reassigned": reassigned,
+    }
+
+
+@router.get("/assignee-candidates")
+def list_assignee_candidates(
+    current: RequireInventoryAssign,
+    db: Database,
+    limit: Annotated[int, Query(ge=1, le=200)] = 100,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> dict[str, Any]:
+    total, users = rbac_service.list_assignee_candidates(db, limit=limit, offset=offset)
+    return {
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "items": [
+            {"id": str(user.id), "display_name": user.display_name, "email": user.email}
+            for user in users
+        ],
     }
 
 
